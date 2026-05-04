@@ -4,17 +4,39 @@ import { parseFeedback } from './agents/feedback';
 import { reflect } from './agents/reflector';
 
 // ---------------------------------------------------------------------------
-// Request payload
+// Twilio signature verification
+//
+// Twilio signs every inbound webhook POST with HMAC-SHA1 over:
+//   URL + alphabetically-sorted(paramKey + paramValue pairs concatenated)
+// See: https://www.twilio.com/docs/usage/webhooks/webhooks-security
+//
+// We use the Web Crypto API (available natively in the Workers runtime) rather
+// than importing Twilio's node-side validator, which carries Node.js deps that
+// are unnecessary here.
 // ---------------------------------------------------------------------------
 
-type WebhookPayload = { from: string; body: string };
+async function verifyTwilioSignature(
+  authToken: string,
+  signature: string,
+  url: string,
+  params: Record<string, string>,
+): Promise<boolean> {
+  const sortedParams = Object.keys(params).sort()
+    .map(key => key + params[key])
+    .join('');
+  const stringToSign = url + sortedParams;
 
-function parseWebhookPayload(raw: unknown): WebhookPayload | null {
-  if (typeof raw !== 'object' || raw === null) return null;
-  const candidate = raw as Record<string, unknown>;
-  if (typeof candidate.from !== 'string') return null;
-  if (typeof candidate.body !== 'string' || candidate.body === '') return null;
-  return { from: candidate.from, body: candidate.body };
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(authToken),
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(stringToSign));
+  const computed = btoa(String.fromCharCode(...new Uint8Array(mac)));
+  return computed === signature;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,40 +100,54 @@ async function applyProposalToProfile(
 // ---------------------------------------------------------------------------
 
 export async function handleWebhook(c: Context<{ Bindings: Env }>): Promise<Response> {
-  // 1. Parse and validate the inbound payload.
-  let rawPayload: unknown;
-  try {
-    rawPayload = await c.req.json();
-  } catch {
-    return c.json({ error: 'invalid payload' }, 400);
+  // 1. Verify the Twilio signature before trusting any of the payload.
+  //    Twilio POSTs application/x-www-form-urlencoded, so we parse the body
+  //    first (needed for the signature calculation), then verify.
+  const signature = c.req.header('x-twilio-signature') ?? '';
+  const formData = await c.req.parseBody() as Record<string, string>;
+
+  const isValid = await verifyTwilioSignature(
+    c.env.TWILIO_AUTH_TOKEN,
+    signature,
+    c.req.url,
+    formData,
+  );
+  if (!isValid) {
+    return c.text('Forbidden', 403);
   }
 
-  const payload = parseWebhookPayload(rawPayload);
-  if (payload === null) {
+  // 2. Extract Twilio's canonical field names (capital-F From, capital-B Body).
+  const from = formData['From'];
+  const body = formData['Body'];
+
+  if (typeof from !== 'string' || from === '') {
+    return c.json({ error: 'invalid payload' }, 400);
+  }
+  if (typeof body !== 'string' || body === '') {
     return c.json({ error: 'invalid payload' }, 400);
   }
 
   const env = c.env;
 
-  // 2. Read the current user profile (always id = 1).
+  // 3. Read the current user profile (always id = 1).
   const profile = await env.DB.prepare('SELECT * FROM profile WHERE id = 1').first<Profile>();
   if (profile === null) throw new Error('Profile row not found');
 
-  // 3. Read the most-recent idiom_history row (may be null if history is empty).
+  // 4. Read the most-recent idiom_history row (may be null if history is empty).
   const recentRow = await env.DB
     .prepare('SELECT * FROM idiom_history ORDER BY id DESC LIMIT 1')
     .first<IdiomHistory>();
 
-  // 4. Parse the freeform reply text into structured feedback signals.
-  const feedbackResult = await parseFeedback(env, payload.body);
+  // 5. Parse the freeform reply text into structured feedback signals.
+  const feedbackResult = await parseFeedback(env, body);
 
-  // 5. Ask the Reflector which profile fields to mutate.
+  // 6. Ask the Reflector which profile fields to mutate.
   const proposal = await reflect(env, profile, feedbackResult);
 
-  // 6. Persist the proposal (skipped automatically when proposal is empty).
+  // 7. Persist the proposal (skipped automatically when proposal is empty).
   await applyProposalToProfile(env, profile, proposal);
 
-  // 7. Store the raw feedback text on the history row so future Curator
+  // 8. Store the raw feedback text on the history row so future Curator
   //    calls have access to what the user actually said.
   if (recentRow !== null) {
     await env.DB

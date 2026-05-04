@@ -128,10 +128,17 @@ export interface ReflectorProposal {
  * Cloudflare Worker bindings injected at runtime.
  *
  * `DB` is the D1 database bound via `[[d1_databases]]` in `wrangler.toml`.
- * `ANTHROPIC_API_KEY` is stored as a Wrangler secret (`wrangler secret put`)
- * and is never read from `process.env`.
+ * All string fields are stored as Wrangler secrets (`wrangler secret put`)
+ * and are never read from `process.env`.
+ *
+ * TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER must carry the `whatsapp:` prefix
+ * followed by an E.164 number (e.g. `whatsapp:+14155238886`).
  */
 export interface Env {
   DB: D1Database;
   ANTHROPIC_API_KEY: string;
+  TWILIO_ACCOUNT_SID: string;
+  TWILIO_AUTH_TOKEN: string;
+  TWILIO_FROM_NUMBER: string;
+  TWILIO_TO_NUMBER: string;
 }

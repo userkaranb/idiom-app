@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
 import { handleWebhook } from './webhook';
+import { runDailyFlow } from './orchestrator';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -9,10 +10,10 @@ const app = new Hono<{ Bindings: Env }>();
 // deployed and is reachable before any real traffic hits it.
 app.get('/health', (c) => c.json({ ok: true }));
 
-// POST /webhook — accepts a Twilio-shaped JSON body `{ from: string, body: string }`.
-// In v1 it is unauthenticated for local testing; in v2 Twilio posts here directly
-// when the user replies on WhatsApp. Runs Feedback agent → Reflector agent and
-// persists the resulting Profile changes to D1.
+// POST /webhook — Twilio posts application/x-www-form-urlencoded here when the
+// user replies on WhatsApp. The handler verifies the X-Twilio-Signature header
+// before processing, then runs Feedback agent → Reflector agent and persists
+// the resulting Profile changes to D1.
 app.post('/webhook', handleWebhook);
 
 export default {
@@ -20,12 +21,9 @@ export default {
    * WHO CALLS THIS: Cloudflare invokes `fetch()` for every inbound HTTP
    * request to the Worker URL (both production and `wrangler dev`).
    *
-   * WHAT IT WILL DO (wired in a later task):
-   *   GET  /health  — liveness probe (already live)
-   *   POST /webhook — receives a user reply (WhatsApp in v2; plain JSON POST
-   *                   in v1 for local testing), runs Feedback agent →
-   *                   Reflector agent, and persists the resulting Profile
-   *                   changes to D1.
+   *   GET  /health  — liveness probe
+   *   POST /webhook — signature-verified Twilio inbound; runs Feedback agent →
+   *                   Reflector agent and persists resulting Profile changes to D1.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);
@@ -36,19 +34,12 @@ export default {
    * declared by `crons = ["0 13 * * *"]` in `wrangler.toml`. Trigger it
    * locally on demand with `wrangler dev --test-scheduled`.
    *
-   * WHAT IT WILL DO (wired in a later task — the Orchestrator):
    *   1. Read D1 — fetch the current Profile and recent IdiomHistory rows.
-   *   2. Scout — call the LLM with Profile constraints (region, theme,
-   *      vulgarity_tolerance, common_vs_obscure) to generate fresh candidate
-   *      phrases; instruct it to exclude any id already in IdiomHistory.
-   *   3. Curator — second LLM call with forced tool use; receives Scout's
-   *      candidates + Profile and picks exactly one idiom + one colloquialism,
-   *      returning a typed CuratorVerdict.
-   *   4. Writer — third LLM call; turns the CuratorVerdict into the final
-   *      user-facing WhatsApp message body.
-   *   5. console.log(messageBody) — visible via `wrangler tail` in v1.
-   *   6. INSERT one row into idiom_history (sent_at, ids, texts,
-   *      curator_justification; user_rating and user_feedback start null).
+   *   2. Scout — filter seed phrases against history for deduplication.
+   *   3. Curator — LLM picks one idiom + one colloquialism from candidates.
+   *   4. Writer — LLM composes the user-facing WhatsApp message body.
+   *   5. console.log + Twilio WhatsApp send to TWILIO_TO_NUMBER.
+   *   6. INSERT one row into idiom_history.
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runDailyFlow(env));

@@ -3,15 +3,24 @@ import type { Env, Profile, CuratorVerdict } from '../src/types';
 
 // vi.hoisted runs before any imports so these mock functions are available
 // inside the vi.mock factory closures below.
-const { mockScout, mockCurate, mockWrite } = vi.hoisted(() => ({
-  mockScout: vi.fn(),
-  mockCurate: vi.fn(),
-  mockWrite: vi.fn(),
+const { mockScout, mockCurate, mockWrite, mockMessagesCreate } = vi.hoisted(() => ({
+  mockScout:          vi.fn(),
+  mockCurate:         vi.fn(),
+  mockWrite:          vi.fn(),
+  mockMessagesCreate: vi.fn().mockResolvedValue({ sid: 'SM-test-sid' }),
 }));
 
 vi.mock('../src/agents/scout',   () => ({ scout:  mockScout  }));
 vi.mock('../src/agents/curator', () => ({ curate: mockCurate }));
 vi.mock('../src/agents/writer',  () => ({ write:  mockWrite  }));
+
+// Prevent the real Twilio client from being constructed during tests.
+// Any test that allows the real constructor to run would hit the Twilio API.
+vi.mock('twilio', () => ({
+  default: vi.fn(() => ({
+    messages: { create: mockMessagesCreate },
+  })),
+}));
 
 import { runDailyFlow } from '../src/orchestrator';
 
@@ -84,7 +93,14 @@ function makeD1Mocks({
 }
 
 function makeEnv(db: D1Database): Env {
-  return { DB: db, ANTHROPIC_API_KEY: 'test-key' };
+  return {
+    DB: db,
+    ANTHROPIC_API_KEY: 'test-key',
+    TWILIO_ACCOUNT_SID: 'AC-test-sid',
+    TWILIO_AUTH_TOKEN: 'test-auth-token',
+    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
+    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +114,7 @@ describe('runDailyFlow', () => {
     mockScout.mockReturnValue(scoutCandidates);
     mockCurate.mockResolvedValue(mockVerdict);
     mockWrite.mockResolvedValue("¡Hola! Today's phrase is...");
+    mockMessagesCreate.mockResolvedValue({ sid: 'SM-test-sid' });
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
@@ -193,6 +210,44 @@ describe('runDailyFlow', () => {
     );
     expect(appLogCalls).toHaveLength(1);
     expect(appLogCalls[0][0]).toBe('[idiom-app] Daily message:\n' + messageBody);
+  });
+
+  // --- Acceptance criterion: Twilio send is called with correct arguments ---
+
+  it('calls twilio.messages.create with the from/to/body the Writer produced', async () => {
+    const { db } = makeD1Mocks();
+    const messageBody = "¡Hola! Today's phrase is...";
+    mockWrite.mockResolvedValue(messageBody);
+
+    await runDailyFlow(makeEnv(db));
+
+    expect(mockMessagesCreate).toHaveBeenCalledOnce();
+    expect(mockMessagesCreate).toHaveBeenCalledWith({
+      from: 'whatsapp:+14155238886',
+      to:   'whatsapp:+15551234567',
+      body: messageBody,
+    });
+  });
+
+  // --- Acceptance criterion: Twilio send failure is logged and rethrown ---
+
+  it('rethrows a Twilio send error so the cron tick fails loudly', async () => {
+    const { db } = makeD1Mocks();
+    const sendError = new Error('Twilio API unreachable');
+    mockMessagesCreate.mockRejectedValue(sendError);
+
+    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow('Twilio API unreachable');
+  });
+
+  it('logs the Twilio error before rethrowing it', async () => {
+    const { db } = makeD1Mocks();
+    const sendError = new Error('network timeout');
+    mockMessagesCreate.mockRejectedValue(sendError);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow('network timeout');
+
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   // --- Acceptance criterion: idiom_history row is inserted after Writer returns ---
