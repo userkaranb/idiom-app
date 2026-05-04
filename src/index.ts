@@ -51,6 +51,6 @@ export default {
    *      curator_justification; user_rating and user_feedback start null).
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('scheduled() stub — orchestrator not wired yet');
+    ctx.waitUntil(runDailyFlow(env));
   },
 };
