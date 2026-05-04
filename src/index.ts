@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
 import { runDailyFlow } from './orchestrator';
+import { handleWebhook } from './webhook';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -9,11 +10,10 @@ const app = new Hono<{ Bindings: Env }>();
 // deployed and is reachable before any real traffic hits it.
 app.get('/health', (c) => c.json({ ok: true }));
 
-// POST /webhook — wired in a later task. In v1 it accepts a fake Twilio-shaped
-// JSON body `{ from: string, body: string }` so the feedback loop can be
-// exercised without WhatsApp Business API approval. In v2 Twilio posts here
-// directly when the user replies on WhatsApp. The handler runs the Feedback
-// agent → Reflector agent pipeline and persists the resulting Profile changes.
+// POST /webhook — accepts a Twilio-shaped JSON body `{ from: string, body: string }`
+// in v1 for local testing (unauthenticated). Runs the Feedback agent →
+// Reflector agent pipeline and persists the resulting Profile changes to D1.
+app.post('/webhook', handleWebhook);
 
 export default {
   /**
