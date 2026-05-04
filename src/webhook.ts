@@ -1,5 +1,6 @@
 import { Context } from 'hono';
-import type { Env, Profile, IdiomHistory, ReflectorProposal } from './types';
+import type { Env } from './types';
+import type { Repos } from './db';
 import { parseFeedback } from './agents/feedback';
 import { reflect } from './agents/reflector';
 
@@ -40,66 +41,23 @@ async function verifyTwilioSignature(
 }
 
 // ---------------------------------------------------------------------------
-// Profile update
-// ---------------------------------------------------------------------------
-
-/**
- * Builds and runs a dynamic UPDATE against the profile row.
- *
- * Only columns present in the proposal are included in the SET clause, so the
- * Reflector can safely return partial updates. `updated_at` is always
- * refreshed whenever any real change is applied.
- *
- * The UPDATE is skipped entirely when the proposal has no fields — running an
- * empty SET clause would be a SQL error, and there is nothing to persist.
- */
-async function applyProposalToProfile(
-  env: Env,
-  profile: Profile,
-  proposal: ReflectorProposal,
-): Promise<void> {
-  const setClauses: string[] = [];
-  const bindings: (string | number)[] = [];
-
-  if (proposal.regional_preference !== undefined) {
-    setClauses.push('regional_preference = ?');
-    bindings.push(proposal.regional_preference);
-  }
-  if (proposal.vulgarity_tolerance !== undefined) {
-    setClauses.push('vulgarity_tolerance = ?');
-    bindings.push(proposal.vulgarity_tolerance);
-  }
-  if (proposal.common_vs_obscure !== undefined) {
-    setClauses.push('common_vs_obscure = ?');
-    bindings.push(proposal.common_vs_obscure);
-  }
-  if (proposal.themes !== undefined) {
-    setClauses.push('themes = ?');
-    bindings.push(JSON.stringify(proposal.themes));
-  }
-  if (proposal.no_list_additions !== undefined) {
-    // Append new IDs to the existing list rather than replacing it wholesale.
-    const existingIds: string[] = JSON.parse(profile.no_list);
-    const mergedIds = [...existingIds, ...proposal.no_list_additions];
-    setClauses.push('no_list = ?');
-    bindings.push(JSON.stringify(mergedIds));
-  }
-
-  // Nothing to persist — skip rather than run `UPDATE profile SET WHERE id = 1`.
-  if (setClauses.length === 0) return;
-
-  // The Reflector decided something changed: always record when that happened.
-  setClauses.push("updated_at = datetime('now')");
-
-  const sql = `UPDATE profile SET ${setClauses.join(', ')} WHERE id = 1`;
-  await env.DB.prepare(sql).bind(...bindings).run();
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function handleWebhook(c: Context<{ Bindings: Env }>): Promise<Response> {
+/**
+ * Handles an inbound Twilio WhatsApp reply.
+ *
+ * Flow: verify signature → parse Twilio form body → read profile → read
+ * most-recent history row → Feedback agent → Reflector agent → persist
+ * proposal → persist raw feedback.
+ *
+ * `repos` is constructed once per request in `src/index.ts` from the D1 binding;
+ * this handler never touches the raw D1 binding directly.
+ */
+export async function handleWebhook(
+  c: Context<{ Bindings: Env }>,
+  repos: Repos,
+): Promise<Response> {
   // 1. Verify the Twilio signature before trusting any of the payload.
   //    Twilio POSTs application/x-www-form-urlencoded, so we parse the body
   //    first (needed for the signature calculation), then verify.
@@ -130,13 +88,10 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>): Promise<Resp
   const env = c.env;
 
   // 3. Read the current user profile (always id = 1).
-  const profile = await env.DB.prepare('SELECT * FROM profile WHERE id = 1').first<Profile>();
-  if (profile === null) throw new Error('Profile row not found');
+  const profile = await repos.profile.getCurrent();
 
   // 4. Read the most-recent idiom_history row (may be null if history is empty).
-  const recentRow = await env.DB
-    .prepare('SELECT * FROM idiom_history ORDER BY id DESC LIMIT 1')
-    .first<IdiomHistory>();
+  const recentRow = await repos.idiomHistory.getMostRecent();
 
   // 5. Parse the freeform reply text into structured feedback signals.
   const feedbackResult = await parseFeedback(env, body);
@@ -145,15 +100,12 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>): Promise<Resp
   const proposal = await reflect(env, profile, feedbackResult);
 
   // 7. Persist the proposal (skipped automatically when proposal is empty).
-  await applyProposalToProfile(env, profile, proposal);
+  await repos.profile.applyReflectorChanges(proposal);
 
   // 8. Store the raw feedback text on the history row so future Curator
   //    calls have access to what the user actually said.
   if (recentRow !== null) {
-    await env.DB
-      .prepare('UPDATE idiom_history SET user_feedback = ? WHERE id = ?')
-      .bind(feedbackResult.raw, recentRow.id)
-      .run();
+    await repos.idiomHistory.recordFeedback(recentRow.id, feedbackResult.raw);
   }
 
   return c.json({ ok: true });

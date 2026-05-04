@@ -125,6 +125,21 @@ export interface ReflectorProposal {
 }
 
 /**
+ * The data required to INSERT one row into `idiom_history`.
+ *
+ * Omits `id` (autoincrement), `sent_at` (defaulted by the DB to `datetime('now')`),
+ * and the feedback columns (`user_rating`, `user_feedback`) which start null and
+ * are written later via the webhook flow.
+ */
+export interface IdiomHistoryInsert {
+  idiom_id: string;
+  idiom_text: string;
+  colloquialism_id: string;
+  colloquialism_text: string;
+  curator_justification: string;
+}
+
+/**
  * Cloudflare Worker bindings injected at runtime.
  *
  * `DB` is the D1 database bound via `[[d1_databases]]` in `wrangler.toml`.

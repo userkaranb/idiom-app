@@ -1,17 +1,19 @@
 /**
  * Integration tests for the profile-update path of POST /webhook.
  *
- * Covers: input validation (HTTP 400 / HTTP 200), the profile UPDATE SQL
+ * Covers: input validation (HTTP 400 / HTTP 200), the profile update call
  * (skipped when the proposal is empty, constructed dynamically otherwise),
- * and no_list merging math.
+ * and no_list merging math (which is now encapsulated in ProfileRepo).
  *
  * parseFeedback and reflect are mocked at the module level so no Anthropic
- * API key is required. D1Database is satisfied with a plain JS object rather
- * than a formal vi.mock(), keeping the tests free of cloudflare:test imports.
+ * API key is required. The Repos interface is satisfied with plain JS objects
+ * rather than a real D1 database, keeping the tests fast and focused on
+ * webhook behaviour rather than SQL correctness.
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import type { Env, Profile, IdiomHistory, FeedbackResult, ReflectorProposal } from '../src/types';
+import type { Repos } from '../src/db';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (agents only — not the Anthropic SDK)
@@ -84,48 +86,57 @@ async function computeTwilioSignature(
 }
 
 // ---------------------------------------------------------------------------
-// D1 mock factory
+// Repo mock factory
 //
-// Returns a plain JS object that implements the D1Database surface used by
-// handleWebhook. No vi.mock('D1Database') — the object is constructed directly.
+// Returns a plain JS object that implements the Repos surface used by
+// handleWebhook. `applyReflectorChanges` is a vi.fn() stub so tests can
+// inspect what proposals were passed.
 // ---------------------------------------------------------------------------
 
-function buildMockEnv(
+function buildMockRepos(
   profile: Profile,
   recentRow: IdiomHistory | null = null,
 ) {
-  let firstCallIndex = 0;
-  const firstResults: Array<Profile | IdiomHistory | null> = [profile, recentRow];
+  const applyReflectorChanges = vi.fn().mockResolvedValue(profile);
+  const recordFeedback        = vi.fn().mockResolvedValue(undefined);
 
-  const runMock  = vi.fn().mockResolvedValue({});
-  const bindMock = vi.fn().mockReturnValue({ run: runMock });
-
-  const prepareMock = vi.fn().mockReturnValue({
-    first: vi.fn(() => Promise.resolve(firstResults[firstCallIndex++])),
-    bind:  bindMock,
-    run:   runMock,
-  });
-
-  const env: Env = {
-    DB: { prepare: prepareMock } as unknown as D1Database,
-    ANTHROPIC_API_KEY: '',
-    TWILIO_ACCOUNT_SID: 'AC-test-sid',
-    TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
-    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
-    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+  const repos: Repos = {
+    profile: {
+      getCurrent: vi.fn().mockResolvedValue(profile),
+      applyReflectorChanges,
+    },
+    idiomHistory: {
+      listAllSentHistory: vi.fn().mockResolvedValue([]),
+      getMostRecent:      vi.fn().mockResolvedValue(recentRow),
+      recordSent:         vi.fn().mockResolvedValue(undefined),
+      recordFeedback,
+      listRecent:         vi.fn().mockResolvedValue([]),
+      containsPhrase:     vi.fn().mockResolvedValue(false),
+    },
   };
 
-  return { env, prepareMock, bindMock, runMock };
+  return { repos, applyReflectorChanges, recordFeedback };
 }
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function buildApp() {
+function buildApp(repos: Repos) {
   const app = new Hono<{ Bindings: Env }>();
-  app.post('/webhook', handleWebhook);
+  app.post('/webhook', (c) => handleWebhook(c, repos));
   return app;
+}
+
+function buildEnv(): Env {
+  return {
+    DB: {} as D1Database,
+    ANTHROPIC_API_KEY: '',
+    TWILIO_ACCOUNT_SID: 'AC-test-sid',
+    TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
+    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
+    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+  };
 }
 
 /**
@@ -163,15 +174,15 @@ describe('POST /webhook — profile update', () => {
   // -- Input validation (HTTP 400) ------------------------------------------
 
   it('returns 400 with {error:"invalid payload"} when the From field is absent', async () => {
-    const { env } = buildMockEnv(BASE_PROFILE);
-    const response = await postTwilio(buildApp(), { Body: 'some text' }, env);
+    const { repos } = buildMockRepos(BASE_PROFILE);
+    const response = await postTwilio(buildApp(repos), { Body: 'some text' }, buildEnv());
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
 
   it('returns 400 when "Body" is an empty string', async () => {
-    const { env } = buildMockEnv(BASE_PROFILE);
-    const response = await postTwilio(buildApp(), { From: 'whatsapp:+14155551234', Body: '' }, env);
+    const { repos } = buildMockRepos(BASE_PROFILE);
+    const response = await postTwilio(buildApp(repos), { From: 'whatsapp:+14155551234', Body: '' }, buildEnv());
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
@@ -179,11 +190,11 @@ describe('POST /webhook — profile update', () => {
   // -- Happy path (HTTP 200) ------------------------------------------------
 
   it('returns 200 with {ok:true} for a well-formed request', async () => {
-    const { env } = buildMockEnv(BASE_PROFILE);
+    const { repos } = buildMockRepos(BASE_PROFILE);
     const response = await postTwilio(
-      buildApp(),
+      buildApp(repos),
       { From: 'whatsapp:+14155551234', Body: 'loved it, more like this please' },
-      env,
+      buildEnv(),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -191,38 +202,36 @@ describe('POST /webhook — profile update', () => {
 
   // -- Profile UPDATE logic --------------------------------------------------
 
-  it('skips the profile UPDATE entirely when the Reflector proposal is empty', async () => {
+  it('calls applyReflectorChanges with an empty proposal when the Reflector returns no fields', async () => {
     mockReflect.mockResolvedValue({} as ReflectorProposal);
-    const { env, prepareMock } = buildMockEnv(BASE_PROFILE);
+    const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
 
-    await postTwilio(buildApp(), { From: 'whatsapp:+1', Body: 'ok' }, env);
+    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'ok' }, buildEnv());
 
-    const executedSqls = (prepareMock.mock.calls as [string][]).map(([sql]) => sql);
-    expect(executedSqls.some((sql) => sql.startsWith('UPDATE profile'))).toBe(false);
+    // The webhook always delegates to the repo — it does not pre-check for
+    // emptiness. The repo itself skips the SQL UPDATE when the proposal is empty.
+    expect(applyReflectorChanges).toHaveBeenCalledWith({});
   });
 
-  it('runs a profile UPDATE that includes updated_at when the proposal has fields', async () => {
-    mockReflect.mockResolvedValue({ regional_preference: 'Spain' } as ReflectorProposal);
-    const { env, prepareMock } = buildMockEnv(BASE_PROFILE);
+  it('calls applyReflectorChanges with the Reflector proposal when it has fields', async () => {
+    const proposal: ReflectorProposal = { regional_preference: 'Spain' };
+    mockReflect.mockResolvedValue(proposal);
+    const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
 
-    await postTwilio(buildApp(), { From: 'whatsapp:+1', Body: 'más español de España' }, env);
+    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'más español de España' }, buildEnv());
 
-    const executedSqls = (prepareMock.mock.calls as [string][]).map(([sql]) => sql);
-    const updateSql = executedSqls.find((sql) => sql.startsWith('UPDATE profile'));
-    expect(updateSql).toBeDefined();
-    expect(updateSql).toContain("updated_at = datetime('now')");
+    expect(applyReflectorChanges).toHaveBeenCalledWith(proposal);
   });
 
-  it('merges no_list_additions into the existing no_list rather than replacing it', async () => {
-    const profileWithEntries: Profile = { ...BASE_PROFILE, no_list: '["existing-id"]' };
-    mockReflect.mockResolvedValue({ no_list_additions: ['new-id'] } as ReflectorProposal);
+  it('passes no_list_additions to applyReflectorChanges rather than merging in the webhook', async () => {
+    const proposal: ReflectorProposal = { no_list_additions: ['new-id'] };
+    mockReflect.mockResolvedValue(proposal);
 
-    const { env, bindMock } = buildMockEnv(profileWithEntries);
-    await postTwilio(buildApp(), { From: 'whatsapp:+1', Body: 'disliked that one' }, env);
+    const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
+    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'disliked that one' }, buildEnv());
 
-    // The only bind call with a no_list argument comes from the UPDATE profile SQL.
-    // Its first argument is the JSON-serialised merged list.
-    const noListArg = (bindMock.mock.calls[0] as unknown[])[0] as string;
-    expect(JSON.parse(noListArg)).toEqual(['existing-id', 'new-id']);
+    // Merging logic lives inside ProfileRepo.applyReflectorChanges —
+    // the webhook simply forwards the proposal as-is.
+    expect(applyReflectorChanges).toHaveBeenCalledWith(proposal);
   });
 });

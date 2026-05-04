@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
-import { handleWebhook } from './webhook';
+import { createRepositories } from './db';
 import { runDailyFlow } from './orchestrator';
+import { handleWebhook } from './webhook';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -14,7 +15,10 @@ app.get('/health', (c) => c.json({ ok: true }));
 // user replies on WhatsApp. The handler verifies the X-Twilio-Signature header
 // before processing, then runs Feedback agent → Reflector agent and persists
 // the resulting Profile changes to D1.
-app.post('/webhook', handleWebhook);
+//
+// Repos are constructed per-request from `c.env` so each isolated Worker
+// invocation gets its own D1 binding reference.
+app.post('/webhook', (c) => handleWebhook(c, createRepositories(c.env)));
 
 export default {
   /**
@@ -34,14 +38,11 @@ export default {
    * declared by `crons = ["0 13 * * *"]` in `wrangler.toml`. Trigger it
    * locally on demand with `wrangler dev --test-scheduled`.
    *
-   *   1. Read D1 — fetch the current Profile and recent IdiomHistory rows.
-   *   2. Scout — filter seed phrases against history for deduplication.
-   *   3. Curator — LLM picks one idiom + one colloquialism from candidates.
-   *   4. Writer — LLM composes the user-facing WhatsApp message body.
-   *   5. console.log + Twilio WhatsApp send to TWILIO_TO_NUMBER.
-   *   6. INSERT one row into idiom_history.
+   * Repos are constructed once at the top of the scheduled event and passed
+   * into the orchestrator — the raw D1 binding never leaks past this boundary.
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runDailyFlow(env));
+    const repos = createRepositories(env);
+    ctx.waitUntil(runDailyFlow(env, repos));
   },
 };
