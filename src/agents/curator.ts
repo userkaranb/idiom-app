@@ -39,8 +39,11 @@ export async function curate(
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
   const systemPrompt =
-    `You are a Spanish-language curator. Your job is to pick one idiom and one colloquialism\n` +
-    `from the provided candidates that best match the user's taste profile.\n\n` +
+    `You are a Spanish-language curator. Your job is to select one idiom and one colloquialism\n` +
+    `that best match the user's taste profile.\n\n` +
+    `The candidates list is inspiration — you may use a candidate directly or propose a different\n` +
+    `phrase entirely if you know one that fits the profile better. The only constraint is that the\n` +
+    `chosen phrase must not appear in the "Never send again" list below.\n\n` +
     `User profile:\n` +
     `- Regional preference: ${profile.regional_preference}\n` +
     `- Vulgarity tolerance: ${profile.vulgarity_tolerance} (0=none 3=high)\n` +
@@ -48,7 +51,10 @@ export async function curate(
     `- Common vs obscure: ${profile.common_vs_obscure} (0=very common 10=very obscure)\n` +
     `- Never send again: ${profile.no_list}`;
 
-  const userMessage = `Candidates:\n${JSON.stringify(candidates, null, 2)}\n\nPick one idiom and one colloquialism.`;
+  const userMessage =
+    `Candidate phrases (for inspiration — not the only options):\n${JSON.stringify(candidates, null, 2)}\n\n` +
+    `Pick one idiom and one colloquialism. You may select from the candidates or choose any other\n` +
+    `appropriate Spanish phrase not already in the "Never send again" list.`;
 
   const response = await client.messages.create({
     model: 'claude-opus-4-5',

@@ -26,6 +26,7 @@ export async function parseFeedback(env: Env, reply: string): Promise<FeedbackRe
   const response = await client.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 512,
+    system: 'You extract structured feedback signals from user replies to their daily Spanish-learning messages.',
     messages: [{ role: 'user', content: `User reply: "${reply}"` }],
     tools: [PARSE_TOOL],
     tool_choice: { type: 'tool', name: 'parse_feedback' },
