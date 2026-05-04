@@ -7,7 +7,9 @@
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    // @cloudflare/workers-types and @anthropic-ai/sdk ship conflicting .d.ts declarations
+    "skipLibCheck": true
   },
   "include": ["src/**/*", "test/**/*"]
 }
