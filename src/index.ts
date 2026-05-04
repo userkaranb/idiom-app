@@ -16,30 +16,38 @@ app.get('/health', (c) => c.json({ ok: true }));
 
 export default {
   /**
-   * Called by Cloudflare for every inbound HTTP request to the Worker.
+   * WHO CALLS THIS: Cloudflare invokes `fetch()` for every inbound HTTP
+   * request to the Worker URL (both production and `wrangler dev`).
    *
-   * Delegates to the Hono router, which in a later task will handle:
-   *   GET  /health  — liveness probe (already wired above)
-   *   POST /webhook — inbound WhatsApp reply → Feedback → Reflector → Profile update
+   * WHAT IT WILL DO (wired in a later task):
+   *   GET  /health  — liveness probe (already live)
+   *   POST /webhook — receives a user reply (WhatsApp in v2; plain JSON POST
+   *                   in v1 for local testing), runs Feedback agent →
+   *                   Reflector agent, and persists the resulting Profile
+   *                   changes to D1.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);
   },
 
   /**
-   * Called by Cloudflare's Cron Trigger once a day (schedule: `0 13 * * *`
-   * as declared in `wrangler.toml`). In production this fires at 13:00 UTC;
-   * locally it can be triggered on demand with `wrangler dev --test-scheduled`.
+   * WHO CALLS THIS: Cloudflare's Cron Trigger, once a day at 13:00 UTC as
+   * declared by `crons = ["0 13 * * *"]` in `wrangler.toml`. Trigger it
+   * locally on demand with `wrangler dev --test-scheduled`.
    *
-   * When the Orchestrator is wired in a later task, this handler will:
-   *   1. Read Profile + IdiomHistory from D1.
-   *   2. Scout — filter seed-phrases.json down to unseen candidates that match
-   *      the user's region / theme / vulgarity preferences.
-   *   3. Curator — pick one idiom + one colloquialism via forced Anthropic tool
-   *      use, returning a typed CuratorVerdict.
-   *   4. Writer — compose the user-facing WhatsApp message body.
-   *   5. Log the message body via console.log (visible in `wrangler tail`).
-   *   6. Append one row to idiom_history in D1.
+   * WHAT IT WILL DO (wired in a later task — the Orchestrator):
+   *   1. Read D1 — fetch the current Profile and recent IdiomHistory rows.
+   *   2. Scout — call the LLM with Profile constraints (region, theme,
+   *      vulgarity_tolerance, common_vs_obscure) to generate fresh candidate
+   *      phrases; instruct it to exclude any id already in IdiomHistory.
+   *   3. Curator — second LLM call with forced tool use; receives Scout's
+   *      candidates + Profile and picks exactly one idiom + one colloquialism,
+   *      returning a typed CuratorVerdict.
+   *   4. Writer — third LLM call; turns the CuratorVerdict into the final
+   *      user-facing WhatsApp message body.
+   *   5. console.log(messageBody) — visible via `wrangler tail` in v1.
+   *   6. INSERT one row into idiom_history (sent_at, ids, texts,
+   *      curator_justification; user_rating and user_feedback start null).
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('scheduled() stub — orchestrator not wired yet');
