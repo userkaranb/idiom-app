@@ -1,3 +1,4 @@
+import twilio from 'twilio';
 import type { Env, SeedPhrase, IdiomHistory, Profile } from './types';
 import { scout } from './agents/scout';
 import { curate } from './agents/curator';
@@ -40,8 +41,20 @@ export async function runDailyFlow(env: Env): Promise<void> {
   // 6. Writer composes the user-facing message from the verdict.
   const messageBody = await write(env, verdict);
 
-  // 7. v1: emit via wrangler tail. v2: replace with Twilio send.
+  // 7. Log for wrangler tail debugging, then deliver via Twilio WhatsApp.
   console.log('[idiom-app] Daily message:\n' + messageBody);
+
+  const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+  try {
+    await client.messages.create({
+      from: env.TWILIO_FROM_NUMBER,
+      to:   env.TWILIO_TO_NUMBER,
+      body: messageBody,
+    });
+  } catch (error) {
+    console.error('[idiom-app] Twilio send failed:', error);
+    throw error;
+  }
 
   // 8. Persist what was sent so Scout can exclude it on every future run.
   const curatorJustification =

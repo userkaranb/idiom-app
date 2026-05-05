@@ -13,7 +13,14 @@ vi.mock('@anthropic-ai/sdk', () => ({
 
 import { curate } from '../../src/agents/curator';
 
-const mockEnv: Env = { DB: {} as D1Database, ANTHROPIC_API_KEY: 'test-key' };
+const mockEnv: Env = {
+  DB: {} as D1Database,
+  ANTHROPIC_API_KEY: 'test-key',
+  TWILIO_ACCOUNT_SID: 'AC-test',
+  TWILIO_AUTH_TOKEN: 'test-auth-token',
+  TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
+  TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+};
 
 const candidates = {
   idioms: [

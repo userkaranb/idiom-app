@@ -17,6 +17,9 @@ import { handleWebhook } from '../src/webhook';
 // Fixtures
 // ---------------------------------------------------------------------------
 
+const TEST_AUTH_TOKEN = 'test-auth-token';
+const WEBHOOK_URL = 'http://localhost/webhook';
+
 const baseProfile: Profile = {
   id: 1,
   regional_preference: 'general',
@@ -50,6 +53,40 @@ const baseFeedback: FeedbackResult = {
 };
 
 // ---------------------------------------------------------------------------
+// Signature helpers
+//
+// Implements the Twilio HMAC-SHA1 algorithm so tests can produce valid
+// signatures without contacting the Twilio API.
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes the HMAC-SHA1 signature Twilio uses to authenticate inbound
+ * webhook requests. Matches the algorithm documented at
+ * https://www.twilio.com/docs/usage/webhooks/webhooks-security.
+ */
+async function computeTwilioSignature(
+  authToken: string,
+  url: string,
+  params: Record<string, string>,
+): Promise<string> {
+  const sortedParams = Object.keys(params).sort()
+    .map(key => key + params[key])
+    .join('');
+  const stringToSign = url + sortedParams;
+
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(authToken),
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(stringToSign));
+  return btoa(String.fromCharCode(...new Uint8Array(mac)));
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -69,10 +106,6 @@ function buildMockEnv({
   const runMock = vi.fn().mockResolvedValue({});
   const bindMock = vi.fn().mockReturnValue({ run: runMock });
 
-  // `prepare()` always returns the same shared statement object. Calls to
-  // `.first()` on it advance through firstResults in order (SELECT profile,
-  // then SELECT idiom_history). Calls to `.bind(...).run()` are tracked via
-  // bindMock / runMock.
   let firstCallIndex = 0;
   const firstResults: Array<Profile | IdiomHistory | null> = [profile, recentRow];
 
@@ -85,6 +118,10 @@ function buildMockEnv({
   const env: Env = {
     DB: { prepare: prepareMock } as unknown as D1Database,
     ANTHROPIC_API_KEY: 'test-key',
+    TWILIO_ACCOUNT_SID: 'AC-test-sid',
+    TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
+    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
+    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
   };
 
   return { env, prepareMock, bindMock, runMock };
@@ -109,72 +146,107 @@ describe('POST /webhook', () => {
     app.post('/webhook', handleWebhook);
   });
 
-  // Helper that fires a POST against the in-process app.
-  async function post(body: unknown, env: Env): Promise<Response> {
-    return app.request('/webhook', {
+  /**
+   * Posts a form-urlencoded Twilio-style request to /webhook.
+   * Pass `signatureOverride` to test an invalid or missing signature.
+   */
+  async function postTwilio(
+    params: Record<string, string>,
+    env: Env,
+    signatureOverride?: string | null,
+  ): Promise<Response> {
+    const signature = signatureOverride !== undefined
+      ? signatureOverride
+      : await computeTwilioSignature(TEST_AUTH_TOKEN, WEBHOOK_URL, params);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (signature !== null) {
+      headers['X-Twilio-Signature'] = signature as string;
+    }
+
+    return app.request(WEBHOOK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers,
+      body: new URLSearchParams(params).toString(),
     }, env);
   }
 
-  // -- Validation ----------------------------------------------------------
+  // -- Signature verification ------------------------------------------------
 
-  it('returns 400 with {error:"invalid payload"} when the body is not valid JSON', async () => {
+  it('returns 403 when the X-Twilio-Signature header is missing', async () => {
     const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await app.request('/webhook', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: 'not-json!!!',
-    }, env);
+    const response = await postTwilio(
+      { From: 'whatsapp:+14155551234', Body: 'hello' },
+      env,
+      null,                   // omit signature header entirely
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('returns 403 when the X-Twilio-Signature header is wrong', async () => {
+    const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
+    const response = await postTwilio(
+      { From: 'whatsapp:+14155551234', Body: 'hello' },
+      env,
+      'invalid-signature',    // correct format, wrong value
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('proceeds past 403 when a valid signature is provided', async () => {
+    const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
+    const response = await postTwilio(
+      { From: 'whatsapp:+14155551234', Body: 'loved it' },
+      env,
+    );
+    // Signature is valid — should reach the feedback flow, not 403.
+    expect(response.status).not.toBe(403);
+  });
+
+  // -- Validation (checked after signature passes) --------------------------
+
+  it('returns 400 when the From field is absent', async () => {
+    const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
+    const response = await postTwilio({ Body: 'some text' }, env);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
 
-  it('returns 400 when the "from" field is absent', async () => {
+  it('returns 400 when the Body field is absent', async () => {
     const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await post({ body: 'some text' }, env);
+    const response = await postTwilio({ From: 'whatsapp:+14155551234' }, env);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
 
-  it('returns 400 when the "body" field is absent', async () => {
+  it('returns 400 when the Body field is an empty string', async () => {
     const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await post({ from: '+14155551234' }, env);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'invalid payload' });
-  });
-
-  it('returns 400 when the "body" field is an empty string', async () => {
-    const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await post({ from: '+14155551234', body: '' }, env);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'invalid payload' });
-  });
-
-  it('returns 400 when "from" is not a string', async () => {
-    const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await post({ from: 123, body: 'hello' }, env);
+    const response = await postTwilio({ From: 'whatsapp:+14155551234', Body: '' }, env);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
 
   // -- Happy path ----------------------------------------------------------
 
-  it('returns 200 with {ok:true} for a well-formed request', async () => {
+  it('returns 200 with {ok:true} for a well-formed signed request', async () => {
     const { env } = buildMockEnv({ profile: baseProfile, recentRow: null });
-    const response = await post({ from: '+14155551234', body: 'loved it, more like this please' }, env);
+    const response = await postTwilio(
+      { From: 'whatsapp:+14155551234', Body: 'loved it, more like this please' },
+      env,
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
   });
 
-  // -- UPDATE skipped when proposal is empty -------------------------------
+  // -- UPDATE skipped when proposal is empty --------------------------------
 
   it('skips the profile UPDATE entirely when the proposal has no fields', async () => {
     mockReflect.mockResolvedValue({} as ReflectorProposal);
     const { env, prepareMock } = buildMockEnv({ profile: baseProfile, recentRow: null });
 
-    await post({ from: '+1', body: 'ok' }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: 'ok' }, env);
 
     const executedSqls = prepareMock.mock.calls.map((call: unknown[]) => call[0] as string);
     expect(executedSqls.some((sql) => sql.startsWith('UPDATE profile'))).toBe(false);
@@ -186,7 +258,7 @@ describe('POST /webhook', () => {
     mockReflect.mockResolvedValue({ regional_preference: 'Spain' } as ReflectorProposal);
     const { env, prepareMock } = buildMockEnv({ profile: baseProfile, recentRow: null });
 
-    await post({ from: '+1', body: 'más español de España' }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: 'más español de España' }, env);
 
     const executedSqls = prepareMock.mock.calls.map((call: unknown[]) => call[0] as string);
     const updateSql = executedSqls.find((sql) => sql.startsWith('UPDATE profile'));
@@ -202,24 +274,20 @@ describe('POST /webhook', () => {
 
     const { env, bindMock } = buildMockEnv({ profile: profileWithExistingNoList, recentRow: null });
 
-    await post({ from: '+1', body: 'disliked that one' }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: 'disliked that one' }, env);
 
-    // The only bind call is for the profile UPDATE (no recentRow → no history update).
-    // Its sole argument is JSON.stringify(mergedNoList).
     const firstBindCallArgs = bindMock.mock.calls[0] as unknown[];
     const noListArg = firstBindCallArgs[0] as string;
     expect(JSON.parse(noListArg)).toEqual(['old-id', 'new-id']);
   });
 
   it('treats no_list_additions as an empty list when it is absent from the proposal', async () => {
-    // Proposal with vulgarity change only — no_list_additions is not present.
     mockReflect.mockResolvedValue({ vulgarity_tolerance: 1 } as ReflectorProposal);
 
     const { env, prepareMock } = buildMockEnv({ profile: baseProfile, recentRow: null });
 
-    await post({ from: '+1', body: 'mild slang is fine' }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: 'mild slang is fine' }, env);
 
-    // UPDATE profile must run without crashing, and must NOT reference no_list.
     const executedSqls = prepareMock.mock.calls.map((call: unknown[]) => call[0] as string);
     const updateSql = executedSqls.find((sql) => sql.startsWith('UPDATE profile'));
     expect(updateSql).toBeDefined();
@@ -238,13 +306,11 @@ describe('POST /webhook', () => {
       recentRow: baseHistory,
     });
 
-    await post({ from: '+1', body: rawFeedback }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: rawFeedback }, env);
 
     const executedSqls = prepareMock.mock.calls.map((call: unknown[]) => call[0] as string);
     expect(executedSqls.some((sql) => sql.includes('UPDATE idiom_history'))).toBe(true);
 
-    // With an empty proposal (no profile UPDATE), the only bind call is for
-    // the idiom_history update: bind(rawFeedback, recentRow.id).
     const historyBindArgs = bindMock.mock.calls[0] as unknown[];
     expect(historyBindArgs[0]).toBe(rawFeedback);
     expect(historyBindArgs[1]).toBe(baseHistory.id);
@@ -254,7 +320,7 @@ describe('POST /webhook', () => {
     mockReflect.mockResolvedValue({} as ReflectorProposal);
     const { env, prepareMock } = buildMockEnv({ profile: baseProfile, recentRow: null });
 
-    await post({ from: '+1', body: 'cool' }, env);
+    await postTwilio({ From: 'whatsapp:+1', Body: 'cool' }, env);
 
     const executedSqls = prepareMock.mock.calls.map((call: unknown[]) => call[0] as string);
     expect(executedSqls.some((sql) => sql.includes('UPDATE idiom_history'))).toBe(false);
