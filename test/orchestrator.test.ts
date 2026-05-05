@@ -1,5 +1,6 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { Env, Profile, CuratorVerdict } from '../src/types';
+import type { Env, Profile, CuratorVerdict, IdiomHistory, IdiomHistoryInsert } from '../src/types';
+import type { Repos } from '../src/db';
 
 // vi.hoisted runs before any imports so these mock functions are available
 // inside the vi.mock factory closures below.
@@ -61,40 +62,40 @@ const scoutCandidates = {
 };
 
 // ---------------------------------------------------------------------------
-// D1 mock factory
+// Fake repository factory
 //
-// Returns the fake D1Database plus individual mock handles so tests can make
-// assertions on exactly what was bound / run.
+// Returns a Repos whose methods are vi.fn() stubs so tests can assert on
+// which methods were called and with what arguments.
 // ---------------------------------------------------------------------------
 
-function makeD1Mocks({
-  profileRows = [mockProfile] as unknown[],
-  historyRows  = [] as unknown[],
-} = {}) {
-  const run  = vi.fn().mockResolvedValue(undefined);
-  const bind = vi.fn().mockReturnValue({ run });
+function makeFakeRepos({
+  profileRows = [mockProfile] as (Profile | null)[],
+  historyRows  = [] as IdiomHistory[],
+} = {}): Repos {
+  // getCurrent: return the first non-null profile, or throw when absent.
+  const getCurrent = vi.fn(async () => {
+    const profile = profileRows[0] ?? null;
+    if (!profile) throw new Error('profile row with id=1 not found in D1');
+    return profile;
+  });
 
-  const db = {
-    prepare: vi.fn((sql: string) => {
-      if (sql.startsWith('SELECT * FROM profile')) {
-        return { all: vi.fn().mockResolvedValue({ results: profileRows }) };
-      }
-      if (sql.startsWith('SELECT idiom_id')) {
-        return { all: vi.fn().mockResolvedValue({ results: historyRows }) };
-      }
-      if (sql.includes('INSERT INTO idiom_history')) {
-        return { bind };
-      }
-      throw new Error(`Unexpected SQL in test mock: ${sql}`);
-    }),
-  } as unknown as D1Database;
+  const applyReflectorChanges = vi.fn().mockResolvedValue(mockProfile);
+  const listAllSentHistory    = vi.fn().mockResolvedValue(historyRows);
+  const getMostRecent         = vi.fn().mockResolvedValue(null);
+  const recordSent            = vi.fn().mockResolvedValue(undefined);
+  const recordFeedback        = vi.fn().mockResolvedValue(undefined);
+  const listRecent            = vi.fn().mockResolvedValue([]);
+  const containsPhrase        = vi.fn().mockResolvedValue(false);
 
-  return { db, bind, run };
+  return {
+    profile:      { getCurrent, applyReflectorChanges },
+    idiomHistory: { listAllSentHistory, getMostRecent, recordSent, recordFeedback, listRecent, containsPhrase },
+  };
 }
 
-function makeEnv(db: D1Database): Env {
+function makeEnv(): Env {
   return {
-    DB: db,
+    DB: {} as D1Database,
     ANTHROPIC_API_KEY: 'test-key',
     TWILIO_ACCOUNT_SID: 'AC-test-sid',
     TWILIO_AUTH_TOKEN: 'test-auth-token',
@@ -124,44 +125,39 @@ describe('runDailyFlow', () => {
 
   // --- Acceptance criterion: profile is read before Scout ---
 
-  it('reads profile from D1 with the expected SQL before calling Scout', async () => {
-    const { db } = makeD1Mocks();
-    const prepare = db.prepare as ReturnType<typeof vi.fn>;
+  it('reads the current profile before calling Scout', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
-    await runDailyFlow(makeEnv(db));
-
-    const profileCalls = prepare.mock.calls.filter((args) =>
-      String(args[0]).startsWith('SELECT * FROM profile'),
-    );
-    expect(profileCalls).toHaveLength(1);
+    expect(repos.profile.getCurrent).toHaveBeenCalledOnce();
     // Scout must have been called (meaning the profile read was a prerequisite)
     expect(mockScout).toHaveBeenCalledOnce();
   });
 
   // --- Acceptance criterion: history is read before Scout ---
 
-  it('reads idiom_history from D1 before calling Scout', async () => {
-    const { db } = makeD1Mocks();
-    const prepare = db.prepare as ReturnType<typeof vi.fn>;
+  it('reads idiom history before calling Scout', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
-    await runDailyFlow(makeEnv(db));
-
-    const historyCalls = prepare.mock.calls.filter((args) =>
-      String(args[0]).startsWith('SELECT idiom_id'),
-    );
-    expect(historyCalls).toHaveLength(1);
+    expect(repos.idiomHistory.listAllSentHistory).toHaveBeenCalledOnce();
     expect(mockScout).toHaveBeenCalledOnce();
   });
 
   // --- Acceptance criterion: history rows are passed to Scout ---
 
-  it('passes D1 history rows to Scout', async () => {
+  it('passes history rows to Scout', async () => {
     const historyRows = [
-      { idiom_id: 'seen-idiom', colloquialism_id: 'seen-coll' },
-    ];
-    const { db } = makeD1Mocks({ historyRows });
+      {
+        id: 1, sent_at: '2024-01-01T13:00:00Z',
+        idiom_id: 'seen-idiom', idiom_text: '',
+        colloquialism_id: 'seen-coll', colloquialism_text: '',
+        curator_justification: '', user_rating: null, user_feedback: null,
+      },
+    ] as IdiomHistory[];
+    const repos = makeFakeRepos({ historyRows });
 
-    await runDailyFlow(makeEnv(db));
+    await runDailyFlow(makeEnv(), repos);
 
     expect(mockScout).toHaveBeenCalledWith(
       expect.any(Array), // the seed-phrases.json array
@@ -171,10 +167,9 @@ describe('runDailyFlow', () => {
 
   // --- Acceptance criterion: profile is passed to Curator ---
 
-  it('passes the D1 profile to Curator', async () => {
-    const { db } = makeD1Mocks();
-
-    await runDailyFlow(makeEnv(db));
+  it('passes the profile to Curator', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
     expect(mockCurate).toHaveBeenCalledWith(
       expect.objectContaining({ ANTHROPIC_API_KEY: 'test-key' }),
@@ -186,9 +181,8 @@ describe('runDailyFlow', () => {
   // --- Acceptance criterion: verdict is passed to Writer ---
 
   it('passes the CuratorVerdict to Writer', async () => {
-    const { db } = makeD1Mocks();
-
-    await runDailyFlow(makeEnv(db));
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
     expect(mockWrite).toHaveBeenCalledWith(
       expect.objectContaining({ ANTHROPIC_API_KEY: 'test-key' }),
@@ -199,11 +193,11 @@ describe('runDailyFlow', () => {
   // --- Acceptance criterion: console.log called exactly once with message body ---
 
   it('logs the message body exactly once with the [idiom-app] prefix', async () => {
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
     const messageBody = "¡Hola! Today's phrase is...";
     mockWrite.mockResolvedValue(messageBody);
 
-    await runDailyFlow(makeEnv(db));
+    await runDailyFlow(makeEnv(), repos);
 
     const appLogCalls = consoleLogSpy.mock.calls.filter(
       ([msg]) => typeof msg === 'string' && (msg as string).startsWith('[idiom-app]'),
@@ -215,11 +209,11 @@ describe('runDailyFlow', () => {
   // --- Acceptance criterion: Twilio send is called with correct arguments ---
 
   it('calls twilio.messages.create with the from/to/body the Writer produced', async () => {
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
     const messageBody = "¡Hola! Today's phrase is...";
     mockWrite.mockResolvedValue(messageBody);
 
-    await runDailyFlow(makeEnv(db));
+    await runDailyFlow(makeEnv(), repos);
 
     expect(mockMessagesCreate).toHaveBeenCalledOnce();
     expect(mockMessagesCreate).toHaveBeenCalledWith({
@@ -232,54 +226,53 @@ describe('runDailyFlow', () => {
   // --- Acceptance criterion: Twilio send failure is logged and rethrown ---
 
   it('rethrows a Twilio send error so the cron tick fails loudly', async () => {
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
     const sendError = new Error('Twilio API unreachable');
     mockMessagesCreate.mockRejectedValue(sendError);
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow('Twilio API unreachable');
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('Twilio API unreachable');
   });
 
   it('logs the Twilio error before rethrowing it', async () => {
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
     const sendError = new Error('network timeout');
     mockMessagesCreate.mockRejectedValue(sendError);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow('network timeout');
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('network timeout');
 
     expect(errorSpy).toHaveBeenCalled();
   });
 
-  // --- Acceptance criterion: idiom_history row is inserted after Writer returns ---
+  // --- Acceptance criterion: idiom_history row is recorded after Writer returns ---
 
-  it('inserts an idiom_history row after Writer returns', async () => {
-    const { db, run } = makeD1Mocks();
+  it('records the sent idiom after Writer returns', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
-    await runDailyFlow(makeEnv(db));
-
-    expect(run).toHaveBeenCalledOnce();
+    expect(repos.idiomHistory.recordSent).toHaveBeenCalledOnce();
   });
 
-  it('binds verdict fields and combined justification to the INSERT statement', async () => {
-    const { db, bind } = makeD1Mocks();
+  it('records the sent idiom with verdict fields and combined justification', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
-    await runDailyFlow(makeEnv(db));
-
-    expect(bind).toHaveBeenCalledWith(
-      mockVerdict.idiom.id,
-      mockVerdict.idiom.text,
-      mockVerdict.colloquialism.id,
-      mockVerdict.colloquialism.text,
-      `idiom: ${mockVerdict.idiom.justification} | colloquialism: ${mockVerdict.colloquialism.justification}`,
-    );
+    const expectedEntry: IdiomHistoryInsert = {
+      idiom_id:              mockVerdict.idiom.id,
+      idiom_text:            mockVerdict.idiom.text,
+      colloquialism_id:      mockVerdict.colloquialism.id,
+      colloquialism_text:    mockVerdict.colloquialism.text,
+      curator_justification: `idiom: ${mockVerdict.idiom.justification} | colloquialism: ${mockVerdict.colloquialism.justification}`,
+    };
+    expect(repos.idiomHistory.recordSent).toHaveBeenCalledWith(expectedEntry);
   });
 
   // --- Acceptance criterion: throw when profile row is missing ---
 
-  it('throws a descriptive error when the profile row is absent from D1', async () => {
-    const { db } = makeD1Mocks({ profileRows: [] });
+  it('throws a descriptive error when the profile row is absent', async () => {
+    const repos = makeFakeRepos({ profileRows: [null] });
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow(
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
       'profile row with id=1 not found in D1',
     );
   });
@@ -288,27 +281,27 @@ describe('runDailyFlow', () => {
 
   it('throws when Scout returns an empty idioms array', async () => {
     mockScout.mockReturnValue({ idioms: [], colloquialisms: scoutCandidates.colloquialisms });
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow(
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
       'Scout: no remaining idioms/colloquialisms — seed list exhausted',
     );
   });
 
   it('throws when Scout returns an empty colloquialisms array', async () => {
     mockScout.mockReturnValue({ idioms: scoutCandidates.idioms, colloquialisms: [] });
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow(
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
       'Scout: no remaining idioms/colloquialisms — seed list exhausted',
     );
   });
 
   it('does not call Curator when Scout returns empty candidates', async () => {
     mockScout.mockReturnValue({ idioms: [], colloquialisms: [] });
-    const { db } = makeD1Mocks();
+    const repos = makeFakeRepos();
 
-    await expect(runDailyFlow(makeEnv(db))).rejects.toThrow();
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow();
     expect(mockCurate).not.toHaveBeenCalled();
   });
 });
