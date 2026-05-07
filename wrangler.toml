@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "idiom-app"
-database_id = "placeholder-replace-after-wrangler-d1-create"
+database_id = "9979992e-2593-458c-9994-a00284ba7535"
 
 [triggers]
 crons = ["0 13 * * *"]
