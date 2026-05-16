@@ -99,8 +99,8 @@ function makeEnv(): Env {
     ANTHROPIC_API_KEY: 'test-key',
     TWILIO_ACCOUNT_SID: 'AC-test-sid',
     TWILIO_AUTH_TOKEN: 'test-auth-token',
-    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
-    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+    TWILIO_FROM_NUMBER: '+15702184457',
+    TWILIO_TO_NUMBER: '+15551234567',
   };
 }
 
@@ -217,8 +217,8 @@ describe('runDailyFlow', () => {
 
     expect(mockMessagesCreate).toHaveBeenCalledOnce();
     expect(mockMessagesCreate).toHaveBeenCalledWith({
-      from: 'whatsapp:+14155238886',
-      to:   'whatsapp:+15551234567',
+      from: '+15702184457',
+      to:   '+15551234567',
       body: messageBody,
     });
   });

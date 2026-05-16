@@ -134,8 +134,8 @@ function buildEnv(): Env {
     ANTHROPIC_API_KEY: '',
     TWILIO_ACCOUNT_SID: 'AC-test-sid',
     TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
-    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
-    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+    TWILIO_FROM_NUMBER: '+15702184457',
+    TWILIO_TO_NUMBER: '+15551234567',
   };
 }
 
@@ -182,7 +182,7 @@ describe('POST /webhook — profile update', () => {
 
   it('returns 400 when "Body" is an empty string', async () => {
     const { repos } = buildMockRepos(BASE_PROFILE);
-    const response = await postTwilio(buildApp(repos), { From: 'whatsapp:+14155551234', Body: '' }, buildEnv());
+    const response = await postTwilio(buildApp(repos), { From: '+14155551234', Body: '' }, buildEnv());
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
@@ -193,7 +193,7 @@ describe('POST /webhook — profile update', () => {
     const { repos } = buildMockRepos(BASE_PROFILE);
     const response = await postTwilio(
       buildApp(repos),
-      { From: 'whatsapp:+14155551234', Body: 'loved it, more like this please' },
+      { From: '+14155551234', Body: 'loved it, more like this please' },
       buildEnv(),
     );
     expect(response.status).toBe(200);
@@ -206,7 +206,7 @@ describe('POST /webhook — profile update', () => {
     mockReflect.mockResolvedValue({} as ReflectorProposal);
     const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
 
-    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'ok' }, buildEnv());
+    await postTwilio(buildApp(repos), { From: '+1', Body: 'ok' }, buildEnv());
 
     // The webhook always delegates to the repo — it does not pre-check for
     // emptiness. The repo itself skips the SQL UPDATE when the proposal is empty.
@@ -218,7 +218,7 @@ describe('POST /webhook — profile update', () => {
     mockReflect.mockResolvedValue(proposal);
     const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
 
-    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'más español de España' }, buildEnv());
+    await postTwilio(buildApp(repos), { From: '+1', Body: 'más español de España' }, buildEnv());
 
     expect(applyReflectorChanges).toHaveBeenCalledWith(proposal);
   });
@@ -228,7 +228,7 @@ describe('POST /webhook — profile update', () => {
     mockReflect.mockResolvedValue(proposal);
 
     const { repos, applyReflectorChanges } = buildMockRepos(BASE_PROFILE);
-    await postTwilio(buildApp(repos), { From: 'whatsapp:+1', Body: 'disliked that one' }, buildEnv());
+    await postTwilio(buildApp(repos), { From: '+1', Body: 'disliked that one' }, buildEnv());
 
     // Merging logic lives inside ProfileRepo.applyReflectorChanges —
     // the webhook simply forwards the proposal as-is.

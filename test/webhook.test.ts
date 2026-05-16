@@ -136,8 +136,8 @@ function buildEnv(): Env {
     ANTHROPIC_API_KEY: 'test-key',
     TWILIO_ACCOUNT_SID: 'AC-test-sid',
     TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
-    TWILIO_FROM_NUMBER: 'whatsapp:+14155238886',
-    TWILIO_TO_NUMBER: 'whatsapp:+15551234567',
+    TWILIO_FROM_NUMBER: '+15702184457',
+    TWILIO_TO_NUMBER: '+15551234567',
   };
 }
 
@@ -191,7 +191,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
     const response = await postTwilio(
-      { From: 'whatsapp:+14155551234', Body: 'hello' },
+      { From: '+14155551234', Body: 'hello' },
       env,
       repos,
       null,                   // omit signature header entirely
@@ -203,7 +203,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
     const response = await postTwilio(
-      { From: 'whatsapp:+14155551234', Body: 'hello' },
+      { From: '+14155551234', Body: 'hello' },
       env,
       repos,
       'invalid-signature',    // correct format, wrong value
@@ -215,7 +215,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
     const response = await postTwilio(
-      { From: 'whatsapp:+14155551234', Body: 'loved it' },
+      { From: '+14155551234', Body: 'loved it' },
       env,
       repos,
     );
@@ -236,7 +236,7 @@ describe('POST /webhook', () => {
   it('returns 400 when the Body field is absent', async () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
-    const response = await postTwilio({ From: 'whatsapp:+14155551234' }, env, repos);
+    const response = await postTwilio({ From: '+14155551234' }, env, repos);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
@@ -244,7 +244,7 @@ describe('POST /webhook', () => {
   it('returns 400 when the Body field is an empty string', async () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
-    const response = await postTwilio({ From: 'whatsapp:+14155551234', Body: '' }, env, repos);
+    const response = await postTwilio({ From: '+14155551234', Body: '' }, env, repos);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid payload' });
   });
@@ -255,7 +255,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos } = buildMockRepos({ profile: baseProfile, recentRow: null });
     const response = await postTwilio(
-      { From: 'whatsapp:+14155551234', Body: 'loved it, more like this please' },
+      { From: '+14155551234', Body: 'loved it, more like this please' },
       env,
       repos,
     );
@@ -270,7 +270,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos, applyReflectorChanges } = buildMockRepos({ profile: baseProfile, recentRow: null });
 
-    await postTwilio({ From: 'whatsapp:+1', Body: 'ok' }, env, repos);
+    await postTwilio({ From: '+1', Body: 'ok' }, env, repos);
 
     // applyReflectorChanges is always called, but the repo skips the SQL UPDATE
     // internally when the proposal is empty. The webhook always delegates this
@@ -286,7 +286,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos, applyReflectorChanges } = buildMockRepos({ profile: baseProfile, recentRow: null });
 
-    await postTwilio({ From: 'whatsapp:+1', Body: 'más español de España' }, env, repos);
+    await postTwilio({ From: '+1', Body: 'más español de España' }, env, repos);
 
     expect(applyReflectorChanges).toHaveBeenCalledWith(proposal);
   });
@@ -299,7 +299,7 @@ describe('POST /webhook', () => {
 
     const env = buildEnv();
     const { repos, applyReflectorChanges } = buildMockRepos({ profile: baseProfile, recentRow: null });
-    await postTwilio({ From: 'whatsapp:+1', Body: 'disliked that one' }, env, repos);
+    await postTwilio({ From: '+1', Body: 'disliked that one' }, env, repos);
 
     expect(applyReflectorChanges).toHaveBeenCalledWith(proposal);
   });
@@ -317,7 +317,7 @@ describe('POST /webhook', () => {
       recentRow: baseHistory,
     });
 
-    await postTwilio({ From: 'whatsapp:+1', Body: rawFeedback }, env, repos);
+    await postTwilio({ From: '+1', Body: rawFeedback }, env, repos);
 
     expect(recordFeedback).toHaveBeenCalledWith(baseHistory.id, rawFeedback);
   });
@@ -327,7 +327,7 @@ describe('POST /webhook', () => {
     const env = buildEnv();
     const { repos, recordFeedback } = buildMockRepos({ profile: baseProfile, recentRow: null });
 
-    await postTwilio({ From: 'whatsapp:+1', Body: 'cool' }, env, repos);
+    await postTwilio({ From: '+1', Body: 'cool' }, env, repos);
 
     expect(recordFeedback).not.toHaveBeenCalled();
   });

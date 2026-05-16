@@ -12,7 +12,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.get('/health', (c) => c.json({ ok: true }));
 
 // POST /webhook — Twilio posts application/x-www-form-urlencoded here when the
-// user replies on WhatsApp. The handler verifies the X-Twilio-Signature header
+// user replies via SMS. The handler verifies the X-Twilio-Signature header
 // before processing, then runs Feedback agent → Reflector agent and persists
 // the resulting Profile changes to D1.
 //

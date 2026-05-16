@@ -40,7 +40,7 @@ export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
   // 6. Writer composes the user-facing message from the verdict.
   const messageBody = await write(env, verdict);
 
-  // 7. Log for wrangler tail debugging, then deliver via Twilio WhatsApp.
+  // 7. Log for wrangler tail debugging, then deliver via Twilio SMS.
   console.log('[idiom-app] Daily message:\n' + messageBody);
 
   const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
