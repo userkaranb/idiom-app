@@ -138,6 +138,7 @@ function buildEnv(): Env {
     TWILIO_AUTH_TOKEN: TEST_AUTH_TOKEN,
     TWILIO_FROM_NUMBER: '+15702184457',
     TWILIO_TO_NUMBER: '+15551234567',
+    TRIGGER_SECRET: 'test-trigger-secret',
   };
 }
 

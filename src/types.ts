@@ -156,4 +156,8 @@ export interface Env {
   TWILIO_AUTH_TOKEN: string;
   TWILIO_FROM_NUMBER: string;
   TWILIO_TO_NUMBER: string;
+  // Shared secret for POST /trigger. The caller must send
+  //   Authorization: Bearer <TRIGGER_SECRET>
+  // Set with `wrangler secret put TRIGGER_SECRET`.
+  TRIGGER_SECRET: string;
 }

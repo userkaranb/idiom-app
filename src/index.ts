@@ -3,6 +3,7 @@ import type { Env } from './types';
 import { createRepositories } from './db';
 import { runDailyFlow } from './orchestrator';
 import { handleWebhook } from './webhook';
+import { handleTrigger } from './trigger';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -20,6 +21,11 @@ app.get('/health', (c) => c.json({ ok: true }));
 // invocation gets its own D1 binding reference.
 app.post('/webhook', (c) => handleWebhook(c, createRepositories(c.env)));
 
+// POST /trigger — ad-hoc invocation of the daily flow for terminal testing.
+// Gated on TRIGGER_SECRET via `Authorization: Bearer <secret>`. Same code
+// path as the cron, but awaits the run and surfaces errors as HTTP 500.
+app.post('/trigger', (c) => handleTrigger(c, createRepositories(c.env)));
+
 export default {
   /**
    * WHO CALLS THIS: Cloudflare invokes `fetch()` for every inbound HTTP
@@ -28,6 +34,7 @@ export default {
    *   GET  /health  — liveness probe
    *   POST /webhook — signature-verified Twilio inbound; runs Feedback agent →
    *                   Reflector agent and persists resulting Profile changes to D1.
+   *   POST /trigger — Bearer-gated ad-hoc invocation of the daily flow.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);
