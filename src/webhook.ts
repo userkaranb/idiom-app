@@ -45,7 +45,7 @@ async function verifyTwilioSignature(
 // ---------------------------------------------------------------------------
 
 /**
- * Handles an inbound Twilio WhatsApp reply.
+ * Handles an inbound Twilio SMS reply.
  *
  * Flow: verify signature → parse Twilio form body → read profile → read
  * most-recent history row → Feedback agent → Reflector agent → persist

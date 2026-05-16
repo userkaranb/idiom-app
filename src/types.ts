@@ -87,7 +87,7 @@ export interface CuratorVerdict {
 /**
  * Structured output returned by the Feedback AI agent.
  *
- * Data flow: user replies on WhatsApp (v2) or POSTs to /webhook (v1) →
+ * Data flow: user replies via SMS (or test fixture POSTs to /webhook) →
  * fetch() handler extracts the relevant `IdiomHistory` row id → Feedback agent
  * parses the freeform reply text into this typed result → handler writes
  * `user_rating` / `user_feedback` directly to that `IdiomHistory` row → this
@@ -146,8 +146,8 @@ export interface IdiomHistoryInsert {
  * All string fields are stored as Wrangler secrets (`wrangler secret put`)
  * and are never read from `process.env`.
  *
- * TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER must carry the `whatsapp:` prefix
- * followed by an E.164 number (e.g. `whatsapp:+14155238886`).
+ * TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER are bare E.164 phone numbers
+ * (e.g. `+15702184457`) — SMS, not WhatsApp.
  */
 export interface Env {
   DB: D1Database;

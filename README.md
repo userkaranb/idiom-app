@@ -1,8 +1,8 @@
 # idiom-app
 
-A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, logs the message, and saves what it sent. When you reply (via WhatsApp in v2, or a fake webhook POST in v1), it learns from your reaction and sharpens future picks.
+A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, logs the message, and saves what it sent. When you reply via SMS, it learns from your reaction and sharpens future picks.
 
-There is no frontend. The user-facing surface is WhatsApp (v2). In v1 you read output via `wrangler tail` and poke the feedback endpoint with `curl`.
+There is no frontend. The user-facing surface is SMS via Twilio. You can also read raw output via `wrangler tail` and poke the feedback endpoint with `curl` for debugging.
 
 ---
 
@@ -31,7 +31,7 @@ wrangler.toml cron: "0 13 * * *"
          |      Returns structured JSON: { idiom, colloquialism, justification }.
          |
          +- 4. Writer   (Anthropic SDK)
-         |      Turns the CuratorVerdict into a user-facing WhatsApp message body.
+         |      Turns the CuratorVerdict into a user-facing SMS message body.
          |
          +- 5. console.log(messageBody)   <- visible via `wrangler tail`
          |
@@ -41,7 +41,7 @@ wrangler.toml cron: "0 13 * * *"
 ### Feedback flow (`fetch()` — inbound HTTP, POST /webhook)
 
 ```
-WhatsApp reply (v2) -+
+SMS reply            -+
 curl POST /webhook   -+-> fetch() handler
                                 |
                                 +- Feedback agent  (Anthropic SDK)
