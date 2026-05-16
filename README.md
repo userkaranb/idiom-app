@@ -149,3 +149,18 @@ npm test
 # Deploy
 npm run deploy
 ```
+
+### Ad-hoc trigger
+
+The daily flow normally runs on cron at 13:00 UTC. To invoke it on demand
+against the deployed Worker (useful for end-to-end testing without waiting):
+
+```bash
+curl -X POST https://idiom-app.<your-subdomain>.workers.dev/trigger \
+  -H "Authorization: Bearer $TRIGGER_SECRET"
+```
+
+Returns `{"ok":true}` on success, `{"ok":false,"error":"..."}` with HTTP 500
+on failure. The endpoint is gated on a shared secret stored as a Wrangler
+secret (`wrangler secret put TRIGGER_SECRET`), so the public URL cannot be
+abused.
