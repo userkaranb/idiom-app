@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { Env } from './types';
 import { createRepositories } from './db';
 import { runDailyFlow } from './orchestrator';
-import { handleWebhook } from './webhook';
 import { handleTrigger } from './trigger';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -11,15 +10,6 @@ const app = new Hono<{ Bindings: Env }>();
 // useful during local development via `wrangler dev`) to verify the Worker
 // deployed and is reachable before any real traffic hits it.
 app.get('/health', (c) => c.json({ ok: true }));
-
-// POST /webhook — Twilio posts application/x-www-form-urlencoded here when the
-// user replies via SMS. The handler verifies the X-Twilio-Signature header
-// before processing, then runs Feedback agent → Reflector agent and persists
-// the resulting Profile changes to D1.
-//
-// Repos are constructed per-request from `c.env` so each isolated Worker
-// invocation gets its own D1 binding reference.
-app.post('/webhook', (c) => handleWebhook(c, createRepositories(c.env)));
 
 // POST /trigger — ad-hoc invocation of the daily flow for terminal testing.
 // Gated on TRIGGER_SECRET via `Authorization: Bearer <secret>`. Same code
@@ -32,8 +22,6 @@ export default {
    * request to the Worker URL (both production and `wrangler dev`).
    *
    *   GET  /health  — liveness probe
-   *   POST /webhook — signature-verified Twilio inbound; runs Feedback agent →
-   *                   Reflector agent and persists resulting Profile changes to D1.
    *   POST /trigger — Bearer-gated ad-hoc invocation of the daily flow.
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

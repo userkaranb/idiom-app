@@ -16,10 +16,7 @@ import { curate } from '../../src/agents/curator';
 const mockEnv: Env = {
   DB: {} as D1Database,
   ANTHROPIC_API_KEY: 'test-key',
-  TWILIO_ACCOUNT_SID: 'AC-test',
-  TWILIO_AUTH_TOKEN: 'test-auth-token',
-  TWILIO_FROM_NUMBER: '+15702184457',
-  TWILIO_TO_NUMBER: '+15551234567',
+  NTFY_TOPIC: 'test-topic',
   TRIGGER_SECRET: 'test-trigger-secret',
 };
 
