@@ -41,9 +41,23 @@ wrangler.toml cron: "0 13 * * *"
          +- 7. INSERT into idiom_history  (sent_at, idiom_id, text, justification, ...)
 ```
 
-> **Note:** `feedback.ts` and `reflector.ts` agents still exist and could be
-> re-wired to a future inbound feedback channel (e.g. Telegram action buttons).
-> No inbound channel is currently wired.
+### Inbound / feedback channel
+
+The previous Twilio implementation had a `/webhook` route that received SMS
+replies, ran them through `feedback.ts` (parsed the user's rating), then
+`reflector.ts` (proposed profile mutations), and wrote the result back to D1.
+
+**ntfy.sh free tier is publish-only.** There is no URL the Worker can expose
+for the ntfy app to POST replies back to — the push notification flows one
+direction only (server → phone). The `/webhook` route was removed because
+there is nothing left to call it.
+
+The `feedback.ts` and `reflector.ts` agents are **preserved** and their unit
+tests continue to pass. The `user_rating` and `user_feedback` columns in
+`idiom_history` are also kept. When an inbound channel is added (e.g. Telegram
+bot commands, or ntfy's paid action-button callbacks), those agents plug
+straight in — the integration point would be a new route in `src/index.ts`
+that calls `handleFeedback` → `handleReflect` → `repos.idiomHistory.update()`.
 
 ---
 
