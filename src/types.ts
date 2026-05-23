@@ -26,8 +26,8 @@ export interface Profile {
  * already appears in history. The Curator also reads recent rows to understand
  * what the user has already seen and how they rated it.
  *
- * `user_rating` and `user_feedback` start null and are filled in by the
- * webhook handler when the user replies.
+ * `user_rating` and `user_feedback` start null; they are available for a
+ * future inbound feedback channel to populate.
  */
 export interface IdiomHistory {
   id: number;
@@ -87,16 +87,11 @@ export interface CuratorVerdict {
 /**
  * Structured output returned by the Feedback AI agent.
  *
- * Data flow: user replies via SMS (or test fixture POSTs to /webhook) →
- * fetch() handler extracts the relevant `IdiomHistory` row id → Feedback agent
- * parses the freeform reply text into this typed result → handler writes
- * `user_rating` / `user_feedback` directly to that `IdiomHistory` row → this
- * result is then passed to the Reflector, which proposes Profile mutations.
- *
- * Note: this interface intentionally has no `idiom_history_id` field. It is a
- * *transient analysis value* — never stored in D1. Every caller already holds
- * the relevant `IdiomHistory` row id in scope and passes it to the DB update
- * directly; carrying it here too would be redundant coupling.
+ * Parses freeform reply text into structured feedback signals (sentiment,
+ * style preferences, theme mentions). This is a transient analysis value —
+ * never stored in D1 directly. Callers hold the relevant `IdiomHistory` row
+ * id in scope and write `user_rating` / `user_feedback` to D1 themselves;
+ * carrying the id here too would be redundant coupling.
  */
 export interface FeedbackResult {
   sentiment: "positive" | "negative" | "neutral" | "mixed";
@@ -146,16 +141,15 @@ export interface IdiomHistoryInsert {
  * All string fields are stored as Wrangler secrets (`wrangler secret put`)
  * and are never read from `process.env`.
  *
- * TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER are bare E.164 phone numbers
- * (e.g. `+15702184457`) — SMS, not WhatsApp.
+ * NTFY_TOPIC is the ntfy.sh topic name used as the delivery channel. The
+ * worker POSTs to https://ntfy.sh/<NTFY_TOPIC> to send push notifications.
+ * On the free tier the URL is the shared secret — choose a long random name.
  */
 export interface Env {
   DB: D1Database;
   ANTHROPIC_API_KEY: string;
-  TWILIO_ACCOUNT_SID: string;
-  TWILIO_AUTH_TOKEN: string;
-  TWILIO_FROM_NUMBER: string;
-  TWILIO_TO_NUMBER: string;
+  // ntfy.sh topic for push delivery. Set with `wrangler secret put NTFY_TOPIC`.
+  NTFY_TOPIC: string;
   // Shared secret for POST /trigger. The caller must send
   //   Authorization: Bearer <TRIGGER_SECRET>
   // Set with `wrangler secret put TRIGGER_SECRET`.

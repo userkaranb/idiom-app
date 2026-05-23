@@ -1,4 +1,3 @@
-import twilio from 'twilio';
 import type { Env, SeedPhrase, IdiomHistoryInsert } from './types';
 import type { Repos } from './db';
 import { scout } from './agents/scout';
@@ -14,7 +13,7 @@ import seedPhrases from '../seed-phrases.json';
  * orchestrator never touches the raw D1 binding — all persistence goes through
  * the repository layer.
  *
- * @param env   Worker bindings (Anthropic API key, Twilio credentials; DB is accessed via `repos`)
+ * @param env   Worker bindings (Anthropic API key, ntfy topic; DB is accessed via `repos`)
  * @param repos Pre-constructed repository pair from `createRepositories(env)`
  */
 export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
@@ -40,19 +39,20 @@ export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
   // 6. Writer composes the user-facing message from the verdict.
   const messageBody = await write(env, verdict);
 
-  // 7. Log for wrangler tail debugging, then deliver via Twilio SMS.
+  // 7. Log for wrangler tail debugging, then deliver via ntfy.sh push.
   console.log('[idiom-app] Daily message:\n' + messageBody);
 
-  const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-  try {
-    await client.messages.create({
-      from: env.TWILIO_FROM_NUMBER,
-      to:   env.TWILIO_TO_NUMBER,
-      body: messageBody,
-    });
-  } catch (error) {
-    console.error('[idiom-app] Twilio send failed:', error);
-    throw error;
+  const response = await fetch(`https://ntfy.sh/${env.NTFY_TOPIC}`, {
+    method: 'POST',
+    body: messageBody,
+    headers: {
+      'Title':    "Today's Spanish phrases",
+      'Priority': 'default',
+      'Tags':     'books,es',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${await response.text()}`);
   }
 
   // 8. Persist what was sent so Scout can exclude it on every future run.

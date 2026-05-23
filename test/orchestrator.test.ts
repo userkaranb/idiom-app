@@ -4,24 +4,15 @@ import type { Repos } from '../src/db';
 
 // vi.hoisted runs before any imports so these mock functions are available
 // inside the vi.mock factory closures below.
-const { mockScout, mockCurate, mockWrite, mockMessagesCreate } = vi.hoisted(() => ({
-  mockScout:          vi.fn(),
-  mockCurate:         vi.fn(),
-  mockWrite:          vi.fn(),
-  mockMessagesCreate: vi.fn().mockResolvedValue({ sid: 'SM-test-sid' }),
+const { mockScout, mockCurate, mockWrite } = vi.hoisted(() => ({
+  mockScout:  vi.fn(),
+  mockCurate: vi.fn(),
+  mockWrite:  vi.fn(),
 }));
 
 vi.mock('../src/agents/scout',   () => ({ scout:  mockScout  }));
 vi.mock('../src/agents/curator', () => ({ curate: mockCurate }));
 vi.mock('../src/agents/writer',  () => ({ write:  mockWrite  }));
-
-// Prevent the real Twilio client from being constructed during tests.
-// Any test that allows the real constructor to run would hit the Twilio API.
-vi.mock('twilio', () => ({
-  default: vi.fn(() => ({
-    messages: { create: mockMessagesCreate },
-  })),
-}));
 
 import { runDailyFlow } from '../src/orchestrator';
 
@@ -97,10 +88,7 @@ function makeEnv(): Env {
   return {
     DB: {} as D1Database,
     ANTHROPIC_API_KEY: 'test-key',
-    TWILIO_ACCOUNT_SID: 'AC-test-sid',
-    TWILIO_AUTH_TOKEN: 'test-auth-token',
-    TWILIO_FROM_NUMBER: '+15702184457',
-    TWILIO_TO_NUMBER: '+15551234567',
+    NTFY_TOPIC: 'test-topic',
     TRIGGER_SECRET: 'test-trigger-secret',
   };
 }
@@ -111,16 +99,19 @@ function makeEnv(): Env {
 
 describe('runDailyFlow', () => {
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockScout.mockReturnValue(scoutCandidates);
     mockCurate.mockResolvedValue(mockVerdict);
     mockWrite.mockResolvedValue("¡Hola! Today's phrase is...");
-    mockMessagesCreate.mockResolvedValue({ sid: 'SM-test-sid' });
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -207,42 +198,45 @@ describe('runDailyFlow', () => {
     expect(appLogCalls[0][0]).toBe('[idiom-app] Daily message:\n' + messageBody);
   });
 
-  // --- Acceptance criterion: Twilio send is called with correct arguments ---
+  // --- Acceptance criterion: ntfy POST is made with correct URL, method, body, headers ---
 
-  it('calls twilio.messages.create with the from/to/body the Writer produced', async () => {
+  it('POSTs the message body to the ntfy topic URL with the expected headers', async () => {
     const repos = makeFakeRepos();
     const messageBody = "¡Hola! Today's phrase is...";
     mockWrite.mockResolvedValue(messageBody);
 
     await runDailyFlow(makeEnv(), repos);
 
-    expect(mockMessagesCreate).toHaveBeenCalledOnce();
-    expect(mockMessagesCreate).toHaveBeenCalledWith({
-      from: '+15702184457',
-      to:   '+15551234567',
-      body: messageBody,
-    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://ntfy.sh/test-topic');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(messageBody);
+
+    const headers = init.headers as Record<string, string>;
+    expect(headers['Title']).toBe("Today's Spanish phrases");
+    expect(headers['Priority']).toBe('default');
+    expect(headers['Tags']).toBe('books,es');
   });
 
-  // --- Acceptance criterion: Twilio send failure is logged and rethrown ---
+  // --- Acceptance criterion: throws on non-2xx ---
 
-  it('rethrows a Twilio send error so the cron tick fails loudly', async () => {
+  it('throws with status and response text when ntfy returns a non-2xx status', async () => {
+    fetchMock.mockResolvedValue(new Response('rate limited', { status: 429 }));
     const repos = makeFakeRepos();
-    const sendError = new Error('Twilio API unreachable');
-    mockMessagesCreate.mockRejectedValue(sendError);
 
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('Twilio API unreachable');
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('429: rate limited');
   });
 
-  it('logs the Twilio error before rethrowing it', async () => {
+  // --- Acceptance criterion: recordSent not called on delivery failure ---
+
+  it('does not record the sent idiom when the ntfy POST fails', async () => {
+    fetchMock.mockResolvedValue(new Response('server error', { status: 500 }));
     const repos = makeFakeRepos();
-    const sendError = new Error('network timeout');
-    mockMessagesCreate.mockRejectedValue(sendError);
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('network timeout');
-
-    expect(errorSpy).toHaveBeenCalled();
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow();
+    expect(repos.idiomHistory.recordSent).not.toHaveBeenCalled();
   });
 
   // --- Acceptance criterion: idiom_history row is recorded after Writer returns ---

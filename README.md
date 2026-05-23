@@ -1,8 +1,8 @@
 # idiom-app
 
-A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, logs the message, and saves what it sent. When you reply via SMS, it learns from your reaction and sharpens future picks.
+A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, logs the message, and saves what it sent. The message is delivered as a push notification via [ntfy.sh](https://ntfy.sh).
 
-There is no frontend. The user-facing surface is SMS via Twilio. You can also read raw output via `wrangler tail` and poke the feedback endpoint with `curl` for debugging.
+There is no frontend. The user-facing surface is a push notification on your phone. You can also read raw output via `wrangler tail` and poke the trigger endpoint with `curl` for debugging.
 
 ---
 
@@ -31,33 +31,19 @@ wrangler.toml cron: "0 13 * * *"
          |      Returns structured JSON: { idiom, colloquialism, justification }.
          |
          +- 4. Writer   (Anthropic SDK)
-         |      Turns the CuratorVerdict into a user-facing SMS message body.
+         |      Turns the CuratorVerdict into a user-facing message body.
          |
          +- 5. console.log(messageBody)   <- visible via `wrangler tail`
          |
-         +- 6. INSERT into idiom_history  (sent_at, idiom_id, text, justification, ...)
+         +- 6. POST https://ntfy.sh/<NTFY_TOPIC>
+         |      Delivers the message as a push notification.
+         |
+         +- 7. INSERT into idiom_history  (sent_at, idiom_id, text, justification, ...)
 ```
 
-### Feedback flow (`fetch()` — inbound HTTP, POST /webhook)
-
-```
-SMS reply            -+
-curl POST /webhook   -+-> fetch() handler
-                                |
-                                +- Feedback agent  (Anthropic SDK)
-                                |   Parses freeform reply text -> FeedbackResult
-                                |   (sentiment, style preferences, theme mentions)
-                                |
-                                +- UPDATE idiom_history  (user_rating, user_feedback)
-                                |   on the most-recent row
-                                |
-                                +- Reflector agent  (Anthropic SDK)
-                                |   Reads FeedbackResult + current Profile.
-                                |   Proposes Profile mutations -> ReflectorProposal
-                                |   (only fields it has evidence to change are set)
-                                |
-                                +- UPDATE profile  (apply ReflectorProposal fields)
-```
+> **Note:** `feedback.ts` and `reflector.ts` agents still exist and could be
+> re-wired to a future inbound feedback channel (e.g. Telegram action buttons).
+> No inbound channel is currently wired.
 
 ---
 
@@ -85,8 +71,7 @@ the Curator and Scout read it every morning.
 
 Written by the Orchestrator right after composing the message. Scout reads
 `idiom_id` and `colloquialism_id` from all past rows to ensure the same phrase
-is never generated again. `user_rating` and `user_feedback` start null and are
-filled in by the webhook handler.
+is never generated again.
 
 | column                 | type    | description                                    |
 |------------------------|---------|------------------------------------------------|
@@ -97,8 +82,8 @@ filled in by the webhook handler.
 | colloquialism_id       | TEXT    | stable kebab-case id assigned by Scout         |
 | colloquialism_text     | TEXT    | the Spanish phrase                             |
 | curator_justification  | TEXT    | Curator's one-sentence rationale               |
-| user_rating            | INTEGER | 1-5 once the user rates it; null until then    |
-| user_feedback          | TEXT    | freeform reply text; null until received       |
+| user_rating            | INTEGER | reserved for future feedback channel           |
+| user_feedback          | TEXT    | reserved for future feedback channel           |
 
 ---
 
@@ -112,12 +97,7 @@ filled in by the webhook handler.
 | `CuratorVerdict`    | LLM output (transient)   | Curator's structured pick (idiom + colloquialism + justification)        |
 | `FeedbackResult`    | LLM output (transient)   | Feedback agent's parsed reading of a user reply                         |
 | `ReflectorProposal` | LLM output (transient)   | Reflector's proposed mutations to `Profile`                             |
-| `Env`               | Cloudflare runtime       | Worker bindings (D1 handle + Anthropic API key)                         |
-
-`FeedbackResult` carries no `idiom_history_id` because every caller already
-holds that id in scope and writes `user_rating` / `user_feedback` directly to
-D1. Adding the id to `FeedbackResult` would be redundant coupling between the
-analysis value and the storage layer.
+| `Env`               | Cloudflare runtime       | Worker bindings (D1 handle + Anthropic API key + ntfy topic)            |
 
 ---
 
@@ -150,6 +130,21 @@ npm test
 npm run deploy
 ```
 
+### ntfy.sh setup
+
+1. **Pick a topic name.** On the free tier, the URL is the shared secret — use
+   a long random string (e.g. `idiom-app-xk7q2mw9p4`). Anyone who knows the
+   topic name can subscribe, so treat it like a password.
+
+2. **Set the secret:**
+   ```bash
+   wrangler secret put NTFY_TOPIC
+   ```
+
+3. **Subscribe on your phone.** Install the [ntfy mobile app](https://ntfy.sh),
+   tap **Subscribe to topic**, and enter your topic name. Notifications will
+   appear as soon as the Worker POSTs.
+
 ### Ad-hoc trigger
 
 The daily flow normally runs on cron at 13:00 UTC. To invoke it on demand
@@ -164,3 +159,14 @@ Returns `{"ok":true}` on success, `{"ok":false,"error":"..."}` with HTTP 500
 on failure. The endpoint is gated on a shared secret stored as a Wrangler
 secret (`wrangler secret put TRIGGER_SECRET`), so the public URL cannot be
 abused.
+
+---
+
+## Env bindings
+
+| Name               | How to set                              | Description                                     |
+|--------------------|-----------------------------------------|-------------------------------------------------|
+| `DB`               | `[[d1_databases]]` in `wrangler.toml`  | D1 database binding                             |
+| `ANTHROPIC_API_KEY`| `wrangler secret put ANTHROPIC_API_KEY`| Anthropic API key for all LLM calls             |
+| `NTFY_TOPIC`       | `wrangler secret put NTFY_TOPIC`       | ntfy.sh topic name (acts as shared secret)      |
+| `TRIGGER_SECRET`   | `wrangler secret put TRIGGER_SECRET`   | Bearer token for POST /trigger                  |
