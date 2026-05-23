@@ -88,7 +88,9 @@ function makeEnv(): Env {
   return {
     DB: {} as D1Database,
     ANTHROPIC_API_KEY: 'test-key',
-    NTFY_TOPIC: 'test-topic',
+    TELEGRAM_BOT_TOKEN: 'TEST-TOKEN',
+    TELEGRAM_CHAT_ID: '123456789',
+    TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
     TRIGGER_SECRET: 'test-trigger-secret',
   };
 }
@@ -198,9 +200,9 @@ describe('runDailyFlow', () => {
     expect(appLogCalls[0][0]).toBe('[idiom-app] Daily message:\n' + messageBody);
   });
 
-  // --- Acceptance criterion: ntfy POST is made with correct URL, method, body, headers ---
+  // --- Acceptance criterion: Telegram sendMessage POST is made with correct URL, method, headers, body ---
 
-  it('POSTs the message body to the ntfy topic URL with the expected headers', async () => {
+  it('POSTs the message body to the Telegram sendMessage URL with the expected shape', async () => {
     const repos = makeFakeRepos();
     const messageBody = "¡Hola! Today's phrase is...";
     mockWrite.mockResolvedValue(messageBody);
@@ -210,28 +212,29 @@ describe('runDailyFlow', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://ntfy.sh/test-topic');
+    expect(url).toBe('https://api.telegram.org/botTEST-TOKEN/sendMessage');
     expect(init.method).toBe('POST');
-    expect(init.body).toBe(messageBody);
-
-    const headers = init.headers as Record<string, string>;
-    expect(headers['Title']).toBe("Today's Spanish phrases");
-    expect(headers['Priority']).toBe('default');
-    expect(headers['Tags']).toBe('books,es');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: '123456789',
+      text: messageBody,
+    });
   });
 
   // --- Acceptance criterion: throws on non-2xx ---
 
-  it('throws with status and response text when ntfy returns a non-2xx status', async () => {
+  it('throws with a descriptive message when Telegram returns a non-2xx status', async () => {
     fetchMock.mockResolvedValue(new Response('rate limited', { status: 429 }));
     const repos = makeFakeRepos();
 
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('429: rate limited');
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
+      'Telegram sendMessage failed: 429: rate limited',
+    );
   });
 
   // --- Acceptance criterion: recordSent not called on delivery failure ---
 
-  it('does not record the sent idiom when the ntfy POST fails', async () => {
+  it('does not record the sent idiom when the Telegram POST fails', async () => {
     fetchMock.mockResolvedValue(new Response('server error', { status: 500 }));
     const repos = makeFakeRepos();
 

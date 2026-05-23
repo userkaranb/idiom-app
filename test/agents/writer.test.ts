@@ -14,7 +14,9 @@ import { write } from '../../src/agents/writer';
 const mockEnv: Env = {
   DB: {} as D1Database,
   ANTHROPIC_API_KEY: 'test-key',
-  NTFY_TOPIC: 'test-topic',
+  TELEGRAM_BOT_TOKEN: 'TEST-TOKEN',
+  TELEGRAM_CHAT_ID: '123456789',
+  TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
   TRIGGER_SECRET: 'test-trigger-secret',
 };
 

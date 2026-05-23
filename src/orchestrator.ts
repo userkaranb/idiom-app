@@ -13,7 +13,7 @@ import seedPhrases from '../seed-phrases.json';
  * orchestrator never touches the raw D1 binding — all persistence goes through
  * the repository layer.
  *
- * @param env   Worker bindings (Anthropic API key, ntfy topic; DB is accessed via `repos`)
+ * @param env   Worker bindings (Anthropic API key, Telegram credentials; DB is accessed via `repos`)
  * @param repos Pre-constructed repository pair from `createRepositories(env)`
  */
 export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
@@ -39,20 +39,22 @@ export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
   // 6. Writer composes the user-facing message from the verdict.
   const messageBody = await write(env, verdict);
 
-  // 7. Log for wrangler tail debugging, then deliver via ntfy.sh push.
+  // 7. Log for wrangler tail debugging, then deliver via Telegram bot.
   console.log('[idiom-app] Daily message:\n' + messageBody);
 
-  const response = await fetch(`https://ntfy.sh/${env.NTFY_TOPIC}`, {
-    method: 'POST',
-    body: messageBody,
-    headers: {
-      'Title':    "Today's Spanish phrases",
-      'Priority': 'default',
-      'Tags':     'books,es',
+  const response = await fetch(
+    'https://api.telegram.org/bot' + env.TELEGRAM_BOT_TOKEN + '/sendMessage',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: env.TELEGRAM_CHAT_ID,
+        text: messageBody,
+      }),
     },
-  });
+  );
   if (!response.ok) {
-    throw new Error(`${response.status}: ${await response.text()}`);
+    throw new Error('Telegram sendMessage failed: ' + response.status + ': ' + await response.text());
   }
 
   // 8. Persist what was sent so Scout can exclude it on every future run.

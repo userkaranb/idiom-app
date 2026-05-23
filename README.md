@@ -1,8 +1,8 @@
 # idiom-app
 
-A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, logs the message, and saves what it sent. The message is delivered as a push notification via [ntfy.sh](https://ntfy.sh).
+A personal Spanish-immersion Cloudflare Worker. Every day at 13:00 UTC it picks one idiom and one colloquialism tailored to your taste, composes a message, and delivers it as a push notification via a Telegram bot. Reply to the bot and the app evolves your taste profile automatically.
 
-There is no frontend. The user-facing surface is a push notification on your phone. You can also read raw output via `wrangler tail` and poke the trigger endpoint with `curl` for debugging.
+There is no frontend. The user-facing surface is your Telegram chat with the bot. You can also read raw output via `wrangler tail` and poke the trigger endpoint with `curl` for debugging.
 
 ---
 
@@ -35,29 +35,42 @@ wrangler.toml cron: "0 13 * * *"
          |
          +- 5. console.log(messageBody)   <- visible via `wrangler tail`
          |
-         +- 6. POST https://ntfy.sh/<NTFY_TOPIC>
-         |      Delivers the message as a push notification.
+         +- 6. POST https://api.telegram.org/bot<TOKEN>/sendMessage
+         |      Delivers the message as a Telegram push notification.
          |
          +- 7. INSERT into idiom_history  (sent_at, idiom_id, text, justification, ...)
 ```
 
-### Inbound / feedback channel
+### Feedback flow (`POST /webhook` — Telegram calls this when you reply)
 
-The previous Twilio implementation had a `/webhook` route that received SMS
-replies, ran them through `feedback.ts` (parsed the user's rating), then
-`reflector.ts` (proposed profile mutations), and wrote the result back to D1.
-
-**ntfy.sh free tier is publish-only.** There is no URL the Worker can expose
-for the ntfy app to POST replies back to — the push notification flows one
-direction only (server → phone). The `/webhook` route was removed because
-there is nothing left to call it.
-
-The `feedback.ts` and `reflector.ts` agents are **preserved** and their unit
-tests continue to pass. The `user_rating` and `user_feedback` columns in
-`idiom_history` are also kept. When an inbound channel is added (e.g. Telegram
-bot commands, or ntfy's paid action-button callbacks), those agents plug
-straight in — the integration point would be a new route in `src/index.ts`
-that calls `handleFeedback` → `handleReflect` → `repos.idiomHistory.update()`.
+```
+You reply to the bot in Telegram
+         |
+         v
+  POST /webhook  (Telegram calls this URL)
+         |
+         +- 1. Verify X-Telegram-Bot-Api-Secret-Token header == TELEGRAM_WEBHOOK_SECRET
+         |      (403 if missing or wrong)
+         |
+         +- 2. Confirm message.chat.id == TELEGRAM_CHAT_ID
+         |      (403 if not — only the configured owner's messages are processed)
+         |
+         +- 3. Skip non-text messages (stickers, images, etc.) with 200 {skipped:true}
+         |      (acks to Telegram so it stops retrying; no profile mutation)
+         |
+         +- 4. parseFeedback  (Anthropic SDK — forced tool use)
+         |      Parses your freeform reply into structured signals:
+         |      sentiment, wants_more_colloquial, theme_mentions, etc.
+         |
+         +- 5. reflect  (Anthropic SDK — forced tool use)
+         |      Proposes mutations to your Profile based on the parsed feedback.
+         |
+         +- 6. applyReflectorChanges  (D1 write)
+         |      Applies the proposed mutations to the profile row.
+         |
+         +- 7. recordFeedback  (D1 write — only if history row exists)
+                Stores your raw reply text against the most-recent idiom_history row.
+```
 
 ---
 
@@ -96,8 +109,8 @@ is never generated again.
 | colloquialism_id       | TEXT    | stable kebab-case id assigned by Scout         |
 | colloquialism_text     | TEXT    | the Spanish phrase                             |
 | curator_justification  | TEXT    | Curator's one-sentence rationale               |
-| user_rating            | INTEGER | reserved for future feedback channel           |
-| user_feedback          | TEXT    | reserved for future feedback channel           |
+| user_rating            | INTEGER | reserved for future use                        |
+| user_feedback          | TEXT    | populated by /webhook after a reply            |
 
 ---
 
@@ -111,7 +124,7 @@ is never generated again.
 | `CuratorVerdict`    | LLM output (transient)   | Curator's structured pick (idiom + colloquialism + justification)        |
 | `FeedbackResult`    | LLM output (transient)   | Feedback agent's parsed reading of a user reply                         |
 | `ReflectorProposal` | LLM output (transient)   | Reflector's proposed mutations to `Profile`                             |
-| `Env`               | Cloudflare runtime       | Worker bindings (D1 handle + Anthropic API key + ntfy topic)            |
+| `Env`               | Cloudflare runtime       | Worker bindings (D1 handle + Anthropic API key + Telegram credentials)  |
 
 ---
 
@@ -144,20 +157,53 @@ npm test
 npm run deploy
 ```
 
-### ntfy.sh setup
+### Telegram bot setup
 
-1. **Pick a topic name.** On the free tier, the URL is the shared secret — use
-   a long random string (e.g. `idiom-app-xk7q2mw9p4`). Anyone who knows the
-   topic name can subscribe, so treat it like a password.
+1. **Create the bot.** Install Telegram on your phone, then message
+   [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts.
+   Copy the bot token (format: `123456:ABC...`).
 
-2. **Set the secret:**
+2. **Store the bot token:**
    ```bash
-   wrangler secret put NTFY_TOPIC
+   wrangler secret put TELEGRAM_BOT_TOKEN
    ```
 
-3. **Subscribe on your phone.** Install the [ntfy mobile app](https://ntfy.sh),
-   tap **Subscribe to topic**, and enter your topic name. Notifications will
-   appear as soon as the Worker POSTs.
+3. **Open a chat with the bot.** Find the bot by its username in Telegram and
+   tap **Start** — this creates the chat that will receive daily messages.
+
+4. **Get your chat ID.** Message [@userinfobot](https://t.me/userinfobot) and it
+   will reply with your numeric user ID. That number is your `TELEGRAM_CHAT_ID`.
+
+5. **Store the chat ID:**
+   ```bash
+   wrangler secret put TELEGRAM_CHAT_ID
+   ```
+
+6. **Generate a webhook secret** (keeps the `/webhook` endpoint private):
+   ```bash
+   openssl rand -hex 32
+   ```
+
+7. **Store the webhook secret:**
+   ```bash
+   wrangler secret put TELEGRAM_WEBHOOK_SECRET
+   ```
+
+8. **Deploy the Worker:**
+   ```bash
+   npm run deploy
+   ```
+
+9. **Register the webhook with Telegram** (one-time, run after deploy):
+   ```bash
+   curl -X POST 'https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook' \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "url": "https://idiom-app.userkaranb.workers.dev/webhook",
+       "secret_token": "<TELEGRAM_WEBHOOK_SECRET>",
+       "allowed_updates": ["message"]
+     }'
+   ```
 
 ### Ad-hoc trigger
 
@@ -178,9 +224,11 @@ abused.
 
 ## Env bindings
 
-| Name               | How to set                              | Description                                     |
-|--------------------|-----------------------------------------|-------------------------------------------------|
-| `DB`               | `[[d1_databases]]` in `wrangler.toml`  | D1 database binding                             |
-| `ANTHROPIC_API_KEY`| `wrangler secret put ANTHROPIC_API_KEY`| Anthropic API key for all LLM calls             |
-| `NTFY_TOPIC`       | `wrangler secret put NTFY_TOPIC`       | ntfy.sh topic name (acts as shared secret)      |
-| `TRIGGER_SECRET`   | `wrangler secret put TRIGGER_SECRET`   | Bearer token for POST /trigger                  |
+| Name                      | How to set                                       | Description                                              |
+|---------------------------|--------------------------------------------------|----------------------------------------------------------|
+| `DB`                      | `[[d1_databases]]` in `wrangler.toml`           | D1 database binding                                      |
+| `ANTHROPIC_API_KEY`       | `wrangler secret put ANTHROPIC_API_KEY`         | Anthropic API key for all LLM calls                      |
+| `TELEGRAM_BOT_TOKEN`      | `wrangler secret put TELEGRAM_BOT_TOKEN`        | Bot token from @BotFather (format: `123456:ABC...`)      |
+| `TELEGRAM_CHAT_ID`        | `wrangler secret put TELEGRAM_CHAT_ID`          | Numeric chat ID of the owner; obtain from @userinfobot   |
+| `TELEGRAM_WEBHOOK_SECRET` | `wrangler secret put TELEGRAM_WEBHOOK_SECRET`   | Shared secret for POST /webhook; generate with `openssl rand -hex 32` |
+| `TRIGGER_SECRET`          | `wrangler secret put TRIGGER_SECRET`            | Bearer token for POST /trigger                           |
