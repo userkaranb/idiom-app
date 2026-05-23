@@ -3,6 +3,7 @@ import type { Env } from './types';
 import { createRepositories } from './db';
 import { runDailyFlow } from './orchestrator';
 import { handleTrigger } from './trigger';
+import { handleTelegramWebhook } from './webhook';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -16,6 +17,12 @@ app.get('/health', (c) => c.json({ ok: true }));
 // path as the cron, but awaits the run and surfaces errors as HTTP 500.
 app.post('/trigger', (c) => handleTrigger(c, createRepositories(c.env)));
 
+// POST /webhook — receives Telegram updates (user replies to the bot).
+// Telegram calls this URL for every message; the handler verifies the
+// X-Telegram-Bot-Api-Secret-Token header and runs the Feedback → Reflector
+// pipeline to evolve the user's taste profile.
+app.post('/webhook', (c) => handleTelegramWebhook(c, createRepositories(c.env)));
+
 export default {
   /**
    * WHO CALLS THIS: Cloudflare invokes `fetch()` for every inbound HTTP
@@ -23,6 +30,7 @@ export default {
    *
    *   GET  /health  — liveness probe
    *   POST /trigger — Bearer-gated ad-hoc invocation of the daily flow.
+   *   POST /webhook — Telegram update webhook (secret-token gated).
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);

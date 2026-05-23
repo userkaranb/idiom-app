@@ -141,15 +141,22 @@ export interface IdiomHistoryInsert {
  * All string fields are stored as Wrangler secrets (`wrangler secret put`)
  * and are never read from `process.env`.
  *
- * NTFY_TOPIC is the ntfy.sh topic name used as the delivery channel. The
- * worker POSTs to https://ntfy.sh/<NTFY_TOPIC> to send push notifications.
- * On the free tier the URL is the shared secret — choose a long random name.
+ * Telegram is the delivery and feedback channel. The Worker sends daily
+ * messages via the Telegram Bot API (`sendMessage`) and receives user replies
+ * via a Telegram webhook registered with `setWebhook`.
  */
 export interface Env {
   DB: D1Database;
   ANTHROPIC_API_KEY: string;
-  // ntfy.sh topic for push delivery. Set with `wrangler secret put NTFY_TOPIC`.
-  NTFY_TOPIC: string;
+  // Telegram bot token from @BotFather (format: '123456:ABC...').
+  // Set with `wrangler secret put TELEGRAM_BOT_TOKEN`.
+  TELEGRAM_BOT_TOKEN: string;
+  // Numeric chat ID of the owner (as a string). Obtained from @userinfobot.
+  // Set with `wrangler secret put TELEGRAM_CHAT_ID`.
+  TELEGRAM_CHAT_ID: string;
+  // Shared secret passed in X-Telegram-Bot-Api-Secret-Token on inbound webhooks.
+  // Generate with `openssl rand -hex 32`. Set with `wrangler secret put TELEGRAM_WEBHOOK_SECRET`.
+  TELEGRAM_WEBHOOK_SECRET: string;
   // Shared secret for POST /trigger. The caller must send
   //   Authorization: Bearer <TRIGGER_SECRET>
   // Set with `wrangler secret put TRIGGER_SECRET`.

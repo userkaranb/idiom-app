@@ -19,7 +19,9 @@ function buildEnv(): Env {
   return {
     DB: {} as D1Database,
     ANTHROPIC_API_KEY: 'test-key',
-    NTFY_TOPIC: 'test-topic',
+    TELEGRAM_BOT_TOKEN: 'TEST-TOKEN',
+    TELEGRAM_CHAT_ID: '123456789',
+    TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
     TRIGGER_SECRET: TEST_SECRET,
   };
 }
