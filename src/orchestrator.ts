@@ -35,6 +35,7 @@ export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
 
   // 5. Curator picks exactly one idiom and one colloquialism from the candidates.
   const verdict = await curate(env, candidates, profile);
+  console.log('[orchestrator] chose idiom_id=%s colloquialism_id=%s', verdict.idiom.id, verdict.colloquialism.id);
 
   // 6. Writer composes the user-facing message from the verdict.
   const messageBody = await write(env, verdict);
@@ -54,8 +55,10 @@ export async function runDailyFlow(env: Env, repos: Repos): Promise<void> {
     },
   );
   if (!response.ok) {
+    console.error('[orchestrator] Telegram sendMessage failed status=%s', response.status);
     throw new Error('Telegram sendMessage failed: ' + response.status + ': ' + await response.text());
   }
+  console.log('[orchestrator] Telegram sendMessage status=%s', response.status);
 
   // 8. Persist what was sent so Scout can exclude it on every future run.
   const entry: IdiomHistoryInsert = {
