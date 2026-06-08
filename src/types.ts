@@ -1,21 +1,23 @@
 /**
- * D1 table: `profile` (always one row, id = 1).
+ * D1 table: `profile`.
  *
  * Holds the user's long-lived taste model. The Reflector agent proposes
- * mutations to this row after every inbound feedback message; the Curator
- * reads it each morning when picking the day's phrases.
+ * mutations after every inbound feedback message; rather than updating the
+ * existing row, each mutation inserts a new row and soft-deletes the previous
+ * one. The active profile is always the row where `deleted_at IS NULL`.
  *
  * `themes` and `no_list` are stored as JSON-serialised strings because D1
  * does not have a native array type.
  */
 export interface Profile {
-  id: number;                  // always 1
+  id: number;
   regional_preference: string; // e.g. "general", "Mexico", "Spain", "Caribbean"
   vulgarity_tolerance: number; // 0 = none, 1 = mild, 2 = moderate, 3 = high
   themes: string;              // JSON-serialised string[]: ["love","work","animals","food"]
   common_vs_obscure: number;   // 0 = very common, 10 = very obscure
   no_list: string;             // JSON-serialised string[] of phrase IDs that bombed
   updated_at: string;          // ISO-8601
+  deleted_at: string | null;   // NULL = current row; ISO-8601 when soft-deleted
 }
 
 /**

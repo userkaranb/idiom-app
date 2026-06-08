@@ -3,22 +3,22 @@ import type { Profile, ReflectorProposal } from '../types';
 /**
  * All D1 access for the `profile` table.
  *
- * The app maintains exactly one profile row (id = 1). Every method operates on
- * that singleton. Callers receive a typed `Profile` value and never compose SQL
- * directly — schema details (column names, JSON serialisation of `themes` and
- * `no_list`, the `updated_at` refresh) are fully encapsulated here.
+ * Profile state is tracked via soft-deletes: each call to
+ * `applyReflectorChanges` inserts a new row with the merged values and marks
+ * the previous row as deleted. The active profile is always the row where
+ * `deleted_at IS NULL` — callers never compose SQL directly against this table.
  */
 export interface ProfileRepo {
-  /** Returns the single profile row. Throws if the row is absent (misconfigured DB). */
+  /** Returns the active profile row. Throws if no active row exists (misconfigured DB). */
   getCurrent(): Promise<Profile>;
 
   /**
-   * Applies a Reflector's proposed mutations atomically and returns the new profile.
+   * Applies a Reflector's proposed mutations and returns the new profile.
    *
-   * Only fields present in `changes` are included in the UPDATE clause. When
-   * `changes` is empty the update is skipped entirely (an empty SET clause would
-   * be a SQL error, and there is nothing to persist). `no_list_additions` are
-   * merged into the existing `no_list` rather than replacing it.
+   * Each call inserts a new row (merging proposed values with current defaults)
+   * and soft-deletes the previous active row. When `changes` is empty the DB
+   * is not touched and the current profile is returned unchanged.
+   * `no_list_additions` are merged into the existing `no_list` array.
    */
   applyReflectorChanges(changes: ReflectorProposal): Promise<Profile>;
 }
@@ -26,53 +26,50 @@ export interface ProfileRepo {
 export function createProfileRepo(db: D1Database): ProfileRepo {
   async function getCurrent(): Promise<Profile> {
     const profile = await db
-      .prepare('SELECT * FROM profile WHERE id = 1')
+      .prepare('SELECT * FROM profile WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1')
       .first<Profile>();
     if (!profile) {
-      throw new Error('ProfileRepo: profile row with id=1 not found in D1');
+      throw new Error('ProfileRepo: no active profile row found in D1');
     }
     return profile;
   }
 
   async function applyReflectorChanges(changes: ReflectorProposal): Promise<Profile> {
-    const setClauses: string[] = [];
-    const bindings: (string | number)[] = [];
+    const hasChanges =
+      changes.regional_preference !== undefined ||
+      changes.vulgarity_tolerance !== undefined ||
+      changes.common_vs_obscure   !== undefined ||
+      changes.themes              !== undefined ||
+      changes.no_list_additions   !== undefined;
 
-    if (changes.regional_preference !== undefined) {
-      setClauses.push('regional_preference = ?');
-      bindings.push(changes.regional_preference);
-    }
-    if (changes.vulgarity_tolerance !== undefined) {
-      setClauses.push('vulgarity_tolerance = ?');
-      bindings.push(changes.vulgarity_tolerance);
-    }
-    if (changes.common_vs_obscure !== undefined) {
-      setClauses.push('common_vs_obscure = ?');
-      bindings.push(changes.common_vs_obscure);
-    }
-    if (changes.themes !== undefined) {
-      setClauses.push('themes = ?');
-      bindings.push(JSON.stringify(changes.themes));
-    }
-    if (changes.no_list_additions !== undefined) {
-      // Read the current no_list before building the merged value.
-      const current = await getCurrent();
-      const existingIds: string[] = JSON.parse(current.no_list);
-      const mergedIds = [...existingIds, ...changes.no_list_additions];
-      setClauses.push('no_list = ?');
-      bindings.push(JSON.stringify(mergedIds));
-    }
-
-    // Nothing to persist — skip rather than run `UPDATE profile SET WHERE id = 1`.
-    if (setClauses.length === 0) {
+    if (!hasChanges) {
       return getCurrent();
     }
 
-    // The Reflector decided something changed: always record when that happened.
-    setClauses.push("updated_at = datetime('now')");
+    const current = await getCurrent();
 
-    const sql = `UPDATE profile SET ${setClauses.join(', ')} WHERE id = 1`;
-    await db.prepare(sql).bind(...bindings).run();
+    const mergedRegionalPreference = changes.regional_preference ?? current.regional_preference;
+    const mergedVulgarityTolerance = changes.vulgarity_tolerance ?? current.vulgarity_tolerance;
+    const mergedCommonVsObscure    = changes.common_vs_obscure   ?? current.common_vs_obscure;
+    const mergedThemes = changes.themes !== undefined
+      ? JSON.stringify(changes.themes)
+      : current.themes;
+    const mergedNoList = changes.no_list_additions !== undefined
+      ? JSON.stringify([...JSON.parse(current.no_list), ...changes.no_list_additions])
+      : current.no_list;
+
+    await db
+      .prepare(
+        'INSERT INTO profile (regional_preference, vulgarity_tolerance, themes, common_vs_obscure, no_list, updated_at)' +
+        " VALUES (?, ?, ?, ?, ?, datetime('now'))",
+      )
+      .bind(mergedRegionalPreference, mergedVulgarityTolerance, mergedThemes, mergedCommonVsObscure, mergedNoList)
+      .run();
+
+    await db
+      .prepare("UPDATE profile SET deleted_at = datetime('now') WHERE id = ?")
+      .bind(current.id)
+      .run();
 
     return getCurrent();
   }
