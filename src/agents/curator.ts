@@ -41,9 +41,8 @@ export async function curate(
   const systemPrompt =
     `You are a Spanish-language curator. Your job is to select one idiom and one colloquialism\n` +
     `that best match the user's taste profile.\n\n` +
-    `The candidates list is inspiration — you may use a candidate directly or propose a different\n` +
-    `phrase entirely if you know one that fits the profile better. The only constraint is that the\n` +
-    `chosen phrase must not appear in the "Never send again" list below.\n\n` +
+    `You MUST select exclusively from the candidate list provided in the user message.\n` +
+    `Do not invent, suggest, or return any phrase that is not present in the candidates.\n\n` +
     `User profile:\n` +
     `- Regional preference: ${profile.regional_preference}\n` +
     `- Vulgarity tolerance: ${profile.vulgarity_tolerance} (0=none 3=high)\n` +
@@ -52,9 +51,9 @@ export async function curate(
     `- Never send again: ${profile.no_list}`;
 
   const userMessage =
-    `Candidate phrases (for inspiration — not the only options):\n${JSON.stringify(candidates, null, 2)}\n\n` +
-    `Pick one idiom and one colloquialism. You may select from the candidates or choose any other\n` +
-    `appropriate Spanish phrase not already in the "Never send again" list.`;
+    `Candidate phrases — you MUST choose from this list only:\n${JSON.stringify(candidates, null, 2)}\n\n` +
+    `Pick the idiom id from candidates.idioms and the colloquialism id from candidates.colloquialisms\n` +
+    `that best fit the user profile. You may not return any id that does not appear in the list above.`;
 
   const response = await client.messages.create({
     model: 'claude-opus-4-5',
@@ -72,5 +71,30 @@ export async function curate(
     throw new Error('Curator: expected tool_use block not found in response');
   }
 
-  return toolBlock.input as CuratorVerdict;
+  const verdict = toolBlock.input as CuratorVerdict;
+
+  // Build id → candidate maps for O(1) lookup
+  const idiomMap = new Map(candidates.idioms.map((p) => [p.id, p]));
+  const collMap  = new Map(candidates.colloquialisms.map((p) => [p.id, p]));
+
+  const matchedIdiom = idiomMap.get(verdict.idiom.id);
+  if (!matchedIdiom) {
+    throw new Error(
+      `Curator: idiom id "${verdict.idiom.id}" is not in the candidate list. ` +
+      `Valid ids: ${[...idiomMap.keys()].join(', ')}`,
+    );
+  }
+  const matchedColl = collMap.get(verdict.colloquialism.id);
+  if (!matchedColl) {
+    throw new Error(
+      `Curator: colloquialism id "${verdict.colloquialism.id}" is not in the candidate list. ` +
+      `Valid ids: ${[...collMap.keys()].join(', ')}`,
+    );
+  }
+
+  // Return canonical text from the seed list, not whatever the model echoed
+  return {
+    idiom:        { id: matchedIdiom.id, text: matchedIdiom.text, justification: verdict.idiom.justification },
+    colloquialism: { id: matchedColl.id,  text: matchedColl.text,  justification: verdict.colloquialism.justification },
+  };
 }

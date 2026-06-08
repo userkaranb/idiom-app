@@ -86,4 +86,45 @@ describe('curate', () => {
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.tool_choice).toEqual({ type: 'tool', name: 'pick_daily_phrases' });
   });
+
+  it('throws when the model returns an idiom id not in the candidate list', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{
+        type: 'tool_use', id: 'tool_x', name: 'pick_daily_phrases',
+        input: {
+          idiom:        { id: 'hallucinated-idiom', text: 'gato escaldado', justification: 'x' },
+          colloquialism: { id: 'coll-1', text: 'chido', justification: 'y' },
+        },
+      }],
+    });
+    await expect(curate(mockEnv, candidates, profile)).rejects.toThrow('not in the candidate list');
+  });
+
+  it('throws when the model returns a colloquialism id not in the candidate list', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{
+        type: 'tool_use', id: 'tool_x', name: 'pick_daily_phrases',
+        input: {
+          idiom:        { id: 'idiom-1', text: 'no hay mal que por bien no venga', justification: 'x' },
+          colloquialism: { id: 'me-muero-de-hambre', text: 'me muero de hambre', justification: 'y' },
+        },
+      }],
+    });
+    await expect(curate(mockEnv, candidates, profile)).rejects.toThrow('not in the candidate list');
+  });
+
+  it('returns candidate text by id even when the model echoes different text', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{
+        type: 'tool_use', id: 'tool_x', name: 'pick_daily_phrases',
+        input: {
+          idiom:        { id: 'idiom-1', text: 'WRONG TEXT FROM MODEL', justification: 'x' },
+          colloquialism: { id: 'coll-1', text: 'ALSO WRONG', justification: 'y' },
+        },
+      }],
+    });
+    const verdict = await curate(mockEnv, candidates, profile);
+    expect(verdict.idiom.text).toBe('no hay mal que por bien no venga');
+    expect(verdict.colloquialism.text).toBe('chido');
+  });
 });
