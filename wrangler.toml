@@ -8,6 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "idiom-app"
 database_id = "9979992e-2593-458c-9994-a00284ba7535"
+migrations_dir = "migrations"
 
 [triggers]
 crons = ["0 13 * * *"]
