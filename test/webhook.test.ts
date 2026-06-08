@@ -13,7 +13,7 @@ const { mockParseFeedback, mockReflect } = vi.hoisted(() => ({
 vi.mock('../src/agents/feedback',  () => ({ parseFeedback: mockParseFeedback }));
 vi.mock('../src/agents/reflector', () => ({ reflect: mockReflect }));
 
-import { handleTelegramWebhook } from '../src/webhook';
+import { handleTelegramWebhook, buildConfirmationMessage } from '../src/webhook';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -126,16 +126,151 @@ function postWithSecret(body: unknown, secret = TEST_WEBHOOK_SECRET) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// buildConfirmationMessage — pure function tests
+// ---------------------------------------------------------------------------
+
+describe('buildConfirmationMessage', () => {
+  it('includes the sentiment in the "What I understood" section', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'negative',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: [],
+      raw: 'meh',
+    };
+    const proposal: ReflectorProposal = {};
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('Sentiment: negative');
+  });
+
+  it('includes boolean flags that are true and skips those that are null or false', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'mixed',
+      wants_more_colloquial: true,
+      wants_more_formal: false,
+      wants_more_vulgar: null,
+      wants_less_vulgar: true,
+      theme_mentions: [],
+      raw: 'mixed feelings',
+    };
+    const proposal: ReflectorProposal = {};
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('colloquial');
+    expect(text).toContain('less vulgar');
+    expect(text).not.toContain('formal');
+    expect(text).not.toContain('more vulgar');
+  });
+
+  it('includes theme_mentions when the array is non-empty', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'positive',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: ['food', 'travel'],
+      raw: 'food and travel themes',
+    };
+    const proposal: ReflectorProposal = {};
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('food');
+    expect(text).toContain('travel');
+  });
+
+  it('omits the theme_mentions line when the array is empty', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'neutral',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: [],
+      raw: 'ok',
+    };
+    const proposal: ReflectorProposal = {};
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).not.toContain('Themes mentioned');
+  });
+
+  it('lists proposal fields that are present', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'positive',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: [],
+      raw: 'good',
+    };
+    const proposal: ReflectorProposal = {
+      themes: ['food', 'travel', 'love'],
+      vulgarity_tolerance: 1,
+    };
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('food');
+    expect(text).toContain('Vulgarity tolerance');
+    expect(text).toContain('1');
+  });
+
+  it('shows "No profile changes needed." when proposal has no fields', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'neutral',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: [],
+      raw: 'fine',
+    };
+    const proposal: ReflectorProposal = {};
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('No profile changes needed');
+  });
+
+  it('lists all proposal fields when every optional field is provided', () => {
+    const feedback: FeedbackResult = {
+      sentiment: 'positive',
+      wants_more_colloquial: null,
+      wants_more_formal: null,
+      wants_more_vulgar: null,
+      wants_less_vulgar: null,
+      theme_mentions: [],
+      raw: 'great',
+    };
+    const proposal: ReflectorProposal = {
+      regional_preference: 'Mexico',
+      vulgarity_tolerance: 2,
+      themes: ['food'],
+      common_vs_obscure: 7,
+      no_list_additions: ['bad-phrase'],
+    };
+    const text = buildConfirmationMessage(feedback, proposal);
+    expect(text).toContain('Mexico');
+    expect(text).toContain('2');
+    expect(text).toContain('food');
+    expect(text).toContain('7');
+    expect(text).toContain('bad-phrase');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /webhook — integration tests
 // ---------------------------------------------------------------------------
 
 describe('POST /webhook', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
     mockParseFeedback.mockResolvedValue(mockFeedbackResult);
     mockReflect.mockResolvedValue(mockProposal);
+    fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -252,5 +387,94 @@ describe('POST /webhook', () => {
     );
 
     expect(repos.idiomHistory.recordFeedback).not.toHaveBeenCalled();
+  });
+
+  // -- Telegram confirmation reply -----------------------------------------
+
+  it('POSTs a confirmation to the Telegram sendMessage URL with chat_id and text', async () => {
+    const repos = makeFakeRepos();
+    await buildApp(repos).request(
+      WEBHOOK_URL,
+      postWithSecret(buildValidUpdate()),
+      buildEnv(),
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.telegram.org/bot${TEST_BOT_TOKEN}/sendMessage`);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    const body = JSON.parse(init.body as string) as { chat_id: string; text: string };
+    expect(body.chat_id).toBe(TEST_CHAT_ID);
+    expect(body.text).toContain('Got your feedback');
+    expect(body.text).toContain('Sentiment');
+  });
+
+  it('confirmation text includes true boolean flags from the feedback result', async () => {
+    const repos = makeFakeRepos();
+    await buildApp(repos).request(
+      WEBHOOK_URL,
+      postWithSecret(buildValidUpdate()),
+      buildEnv(),
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const { text } = JSON.parse(init.body as string) as { chat_id: string; text: string };
+    // mockFeedbackResult has wants_more_colloquial: true
+    expect(text).toContain('colloquial');
+  });
+
+  it('confirmation text lists proposal fields that are present', async () => {
+    const repos = makeFakeRepos();
+    await buildApp(repos).request(
+      WEBHOOK_URL,
+      postWithSecret(buildValidUpdate()),
+      buildEnv(),
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const { text } = JSON.parse(init.body as string) as { chat_id: string; text: string };
+    // mockProposal has themes and common_vs_obscure
+    expect(text).toContain('work');  // themes includes 'work'
+    expect(text).toContain('food');  // themes includes 'food'
+  });
+
+  it('returns HTTP 200 ok:true even when the Telegram confirmation fetch fails', async () => {
+    fetchMock.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
+    const repos = makeFakeRepos();
+    const res = await buildApp(repos).request(
+      WEBHOOK_URL,
+      postWithSecret(buildValidUpdate()),
+      buildEnv(),
+    );
+
+    // The feedback was already processed and stored. Telegram delivery failure
+    // must not propagate — Telegram would retry the webhook endlessly if we 500.
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('applies DB changes before sending the Telegram confirmation', async () => {
+    const callOrder: string[] = [];
+    const repos = makeFakeRepos(mockRecentRow);
+    (repos.profile.applyReflectorChanges as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      callOrder.push('applyReflectorChanges');
+    });
+    (repos.idiomHistory.recordFeedback as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      callOrder.push('recordFeedback');
+    });
+    fetchMock.mockImplementation(async () => {
+      callOrder.push('fetch');
+      return new Response('', { status: 200 });
+    });
+
+    await buildApp(repos).request(
+      WEBHOOK_URL,
+      postWithSecret(buildValidUpdate()),
+      buildEnv(),
+    );
+
+    expect(callOrder.indexOf('applyReflectorChanges')).toBeLessThan(callOrder.indexOf('fetch'));
+    expect(callOrder.indexOf('recordFeedback')).toBeLessThan(callOrder.indexOf('fetch'));
   });
 });
