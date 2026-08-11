@@ -12,11 +12,10 @@ const { mockRunDailyFlow } = vi.hoisted(() => ({
 // returns are never used because runDailyFlow is mocked.
 vi.mock('../src/orchestrator', () => ({ runDailyFlow: mockRunDailyFlow }));
 
-// Mock the webhook handler to prevent loading the Feedback and Reflector
-// agents, which import @anthropic-ai/sdk — a Node.js module not available
-// in the Workers V8 sandbox. The scheduled() handler under test never calls
-// handleTelegramWebhook; this mock is purely to allow the import of
-// src/index.ts to succeed.
+// Mock the webhook handler to prevent loading any modules that import
+// @anthropic-ai/sdk — a Node.js module not available in the Workers V8 sandbox.
+// The scheduled() handler under test never calls handleTelegramWebhook; this
+// mock is purely to allow the import of src/index.ts to succeed.
 vi.mock('../src/webhook', () => ({ handleTelegramWebhook: vi.fn() }));
 
 import handler from '../src/index';
@@ -99,25 +98,23 @@ describe('scheduled() handler — alert on failure', () => {
     vi.restoreAllMocks();
   });
 
-  // -- Seed exhaustion -------------------------------------------------------
+  // -- Dedup retry exhaustion -----------------------------------------------
 
-  it('sends the seed-exhaustion alert message when the seed list is exhausted', async () => {
+  it('sends the generic failure alert when dedup retry limit is exhausted', async () => {
     mockRunDailyFlow.mockRejectedValue(
-      new Error('Scout: no remaining idioms/colloquialisms — seed list exhausted'),
+      new Error('Generator: dedup retry limit reached — could not generate non-duplicate phrases after 3 attempts'),
     );
 
     const innerPromise = runScheduled(makeEnv());
 
-    // Await the inner promise; we expect it to reject (Cloudflare sees failure)
     await expect(innerPromise).rejects.toThrow();
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.telegram.org/botTEST-TOKEN/sendMessage');
     const body = JSON.parse(init.body as string) as { chat_id: string; text: string };
-    expect(body.text).toBe(
-      '⚠️ No message today — the seed phrase list is exhausted. Add more phrases to seed-phrases.json.',
-    );
+    expect(body.text).toContain('⚠️ Daily flow failed:');
+    expect(body.text).toContain('dedup retry limit reached');
   });
 
   // -- Generic crash ---------------------------------------------------------

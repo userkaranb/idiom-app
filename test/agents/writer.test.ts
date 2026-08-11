@@ -1,5 +1,5 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import type { Env, CuratorVerdict } from '../../src/types';
+import type { Env, SeedPhrase, IdiomHistory, WriterOutput } from '../../src/types';
 
 const { mockCreate } = vi.hoisted(() => {
   return { mockCreate: vi.fn() };
@@ -9,7 +9,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   default: vi.fn(() => ({ messages: { create: mockCreate } })),
 }));
 
-import { write } from '../../src/agents/writer';
+import { generate } from '../../src/agents/writer';
 
 const mockEnv: Env = {
   DB: {} as D1Database,
@@ -20,44 +20,119 @@ const mockEnv: Env = {
   TRIGGER_SECRET: 'test-trigger-secret',
 };
 
-const verdict: CuratorVerdict = {
-  idiom:         { id: 'idiom-1', text: 'no hay mal que por bien no venga', justification: 'Matches theme.' },
-  colloquialism: { id: 'coll-1',  text: 'chido',                            justification: 'Fits region.' },
+const mockExemplars: SeedPhrase[] = [
+  { id: 'idiom-a', text: 'Meter la pata', type: 'idiom', region: 'general', theme: 'misc', vulgarity_level: 0 },
+  { id: 'coll-a', text: 'Ni modo', type: 'colloquialism', region: 'Mexico', theme: 'misc', vulgarity_level: 0 },
+];
+
+const mockHistory: IdiomHistory[] = [];
+
+const mockToolOutput: WriterOutput = {
+  idiom: {
+    phrase: 'ponerse las pilas',
+    region: 'general',
+    meaning: 'to get your act together',
+    example: 'Tienes que ponerte las pilas antes del examen.',
+    nearest_existing: 'none',
+    why_different: 'Focuses on diligence, not mishaps.',
+  },
+  colloquialism: {
+    phrase: 'bregar',
+    region: 'Puerto Rico',
+    meaning: 'to deal with / to handle',
+    example: 'Tengo que bregar con eso mañana.',
+    nearest_existing: 'none',
+    why_different: 'Puerto Rican-specific meaning, not found elsewhere.',
+  },
 };
 
-describe('write', () => {
+function buildToolResponse(input: WriterOutput) {
+  return {
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_01',
+        name: 'generate_daily_phrases',
+        input,
+      },
+    ],
+  };
+}
+
+describe('generate', () => {
   beforeEach(() => {
     mockCreate.mockReset();
   });
 
-  it('returns the trimmed text from the first text block', async () => {
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '  Today\'s two phrases:\n1) chido\n  ' }],
-    });
-    const result = await write(mockEnv, verdict);
-    expect(result).toBe("Today's two phrases:\n1) chido");
+  it('uses the claude-opus-4-5 model', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.model).toBe('claude-opus-4-5');
   });
 
-  it('throws when the response contains no text block', async () => {
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'tool_use', id: 'x', name: 'something', input: {} }],
-    });
-    await expect(write(mockEnv, verdict)).rejects.toThrow('Writer');
+  it('forces tool use with generate_daily_phrases', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.tool_choice).toEqual({ type: 'tool', name: 'generate_daily_phrases' });
+  });
+
+  it('returns the tool block input as WriterOutput', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    const result = await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    expect(result).toEqual(mockToolOutput);
+  });
+
+  it('throws when no tool_use block is found in the response', async () => {
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'unexpected text' }] });
+
+    await expect(generate(mockEnv, mockExemplars, mockHistory, [])).rejects.toThrow('Generator');
   });
 
   it('throws when the response content array is empty', async () => {
     mockCreate.mockResolvedValue({ content: [] });
-    await expect(write(mockEnv, verdict)).rejects.toThrow('Writer');
+
+    await expect(generate(mockEnv, mockExemplars, mockHistory, [])).rejects.toThrow('Generator');
   });
 
-  it('includes both phrase texts in the outgoing message prompt', async () => {
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'message body' }],
-    });
-    await write(mockEnv, verdict);
+  it('includes exemplar texts in the system prompt', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
     const callArgs = mockCreate.mock.calls[0][0];
-    const userContent: string = callArgs.messages[0].content;
-    expect(userContent).toContain(verdict.idiom.text);
-    expect(userContent).toContain(verdict.colloquialism.text);
+    expect(callArgs.system).toContain('Meter la pata');
+    expect(callArgs.system).toContain('Ni modo');
+  });
+
+  it('includes collisionHint in the system prompt when provided', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, [], 'echarle un vistazo');
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.system).toContain('echarle un vistazo');
+    expect(callArgs.system).toContain('IMPORTANT');
+  });
+
+  it('includes feedback items in the user message when provided', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, ['loved it!', 'more Puerto Rico please']);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    const userMessage = callArgs.messages[0].content as string;
+    expect(userMessage).toContain('loved it!');
+    expect(userMessage).toContain('more Puerto Rico please');
+  });
+
+  it('omits the feedback section when no feedback items are provided', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    const userMessage = callArgs.messages[0].content as string;
+    expect(userMessage).not.toContain('feedback history');
   });
 });

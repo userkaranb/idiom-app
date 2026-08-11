@@ -19,8 +19,14 @@ const BASE_ROW: IdiomHistory = {
   sent_at: '2024-01-01T13:00:00Z',
   idiom_id: 'el-que-no-llora',
   idiom_text: 'El que no llora no mama',
+  idiom_meaning: null,
+  idiom_example: null,
+  idiom_region: null,
   colloquialism_id: 'chido',
   colloquialism_text: 'chido',
+  colloquialism_meaning: null,
+  colloquialism_example: null,
+  colloquialism_region: null,
   curator_justification: 'good fit',
   user_rating: null,
   user_feedback: null,
@@ -29,8 +35,14 @@ const BASE_ROW: IdiomHistory = {
 const BASE_INSERT: IdiomHistoryInsert = {
   idiom_id:              'el-que-no-llora',
   idiom_text:            'El que no llora no mama',
+  idiom_meaning:         "if you don't speak up, you don't get what you want",
+  idiom_example:         'Pídele un aumento — el que no llora no mama.',
+  idiom_region:          'general',
   colloquialism_id:      'chido',
   colloquialism_text:    'chido',
+  colloquialism_meaning: 'cool',
+  colloquialism_example: '¡Qué chido!',
+  colloquialism_region:  'Mexico',
   curator_justification: 'idiom: Common. | colloquialism: Casual.',
 };
 
@@ -100,76 +112,6 @@ describe('IdiomHistoryRepo.listAllSentHistory', () => {
 });
 
 // ---------------------------------------------------------------------------
-// listRecent
-// ---------------------------------------------------------------------------
-
-describe('IdiomHistoryRepo.listRecent', () => {
-  it('queries with ORDER BY id DESC LIMIT ? and binds the limit argument', async () => {
-    const { db, prepareMock, bindMock } = buildD1Mock();
-    const repo = createIdiomHistoryRepo(db);
-
-    await repo.listRecent(10);
-
-    const sql = prepareMock.mock.calls[0][0] as string;
-    expect(sql).toContain('ORDER BY id DESC LIMIT ?');
-    expect(bindMock).toHaveBeenCalledWith(10);
-  });
-
-  it('returns the rows from the D1 result', async () => {
-    const { db } = buildD1Mock({ allRows: [BASE_ROW] });
-    const repo = createIdiomHistoryRepo(db);
-
-    const result = await repo.listRecent(5);
-
-    expect(result).toEqual([BASE_ROW]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// containsPhrase
-// ---------------------------------------------------------------------------
-
-describe('IdiomHistoryRepo.containsPhrase', () => {
-  it('checks both idiom_id and colloquialism_id columns in a single query', async () => {
-    const { db, prepareMock } = buildD1Mock({ firstRow: null });
-    const repo = createIdiomHistoryRepo(db);
-
-    await repo.containsPhrase('some-phrase');
-
-    const sql = prepareMock.mock.calls[0][0] as string;
-    expect(sql).toContain('idiom_id');
-    expect(sql).toContain('colloquialism_id');
-  });
-
-  it('binds the phrase value for both column checks', async () => {
-    const { db, bindMock } = buildD1Mock({ firstRow: null });
-    const repo = createIdiomHistoryRepo(db);
-
-    await repo.containsPhrase('target-phrase');
-
-    expect(bindMock).toHaveBeenCalledWith('target-phrase', 'target-phrase');
-  });
-
-  it('returns true when a matching row exists', async () => {
-    const { db } = buildD1Mock({ firstRow: { 1: 1 } });
-    const repo = createIdiomHistoryRepo(db);
-
-    const result = await repo.containsPhrase('known-phrase');
-
-    expect(result).toBe(true);
-  });
-
-  it('returns false when no matching row exists', async () => {
-    const { db } = buildD1Mock({ firstRow: null });
-    const repo = createIdiomHistoryRepo(db);
-
-    const result = await repo.containsPhrase('unknown-phrase');
-
-    expect(result).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // getMostRecent
 // ---------------------------------------------------------------------------
 
@@ -219,14 +161,20 @@ describe('IdiomHistoryRepo.recordSent', () => {
     expect(sql).toContain('INSERT INTO idiom_history');
     expect(sql).toContain('idiom_id');
     expect(sql).toContain('idiom_text');
+    expect(sql).toContain('idiom_meaning');
+    expect(sql).toContain('idiom_example');
+    expect(sql).toContain('idiom_region');
     expect(sql).toContain('colloquialism_id');
     expect(sql).toContain('colloquialism_text');
+    expect(sql).toContain('colloquialism_meaning');
+    expect(sql).toContain('colloquialism_example');
+    expect(sql).toContain('colloquialism_region');
     expect(sql).toContain('curator_justification');
     // sent_at is defaulted by the DB expression, not a bound placeholder
     expect(sql).toContain("datetime('now')");
   });
 
-  it('binds all five entry fields in declaration order', async () => {
+  it('binds all eleven entry fields in declaration order', async () => {
     const { db, bindMock } = buildD1Mock();
     const repo = createIdiomHistoryRepo(db);
 
@@ -235,8 +183,14 @@ describe('IdiomHistoryRepo.recordSent', () => {
     expect(bindMock).toHaveBeenCalledWith(
       BASE_INSERT.idiom_id,
       BASE_INSERT.idiom_text,
+      BASE_INSERT.idiom_meaning,
+      BASE_INSERT.idiom_example,
+      BASE_INSERT.idiom_region,
       BASE_INSERT.colloquialism_id,
       BASE_INSERT.colloquialism_text,
+      BASE_INSERT.colloquialism_meaning,
+      BASE_INSERT.colloquialism_example,
+      BASE_INSERT.colloquialism_region,
       BASE_INSERT.curator_justification,
     );
   });

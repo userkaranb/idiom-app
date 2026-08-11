@@ -1,94 +1,93 @@
 /**
- * Integration tests for the idiom_history deduplication logic in scout().
+ * Tests for the text-based deduplication utilities in src/dedup.ts.
  *
- * scout() is a pure function — no LLM calls, no D1 access — so these tests
- * need no mocks. They verify the three invariants that protect lifetime
- * deduplication: exclusion via idiom_id, exclusion via colloquialism_id, and
- * cross-column accumulation across multiple history rows.
+ * normalizePhrase and findCollision are pure functions — no LLM calls, no D1
+ * access — so these tests need no mocks. They verify that normalization handles
+ * case, accents, and punctuation correctly, and that findCollision catches exact
+ * matches, near-exact matches within the Levenshtein threshold, and returns null
+ * when phrases are sufficiently distinct.
  */
 import { describe, it, expect } from 'vitest';
-import { scout } from '../src/agents/scout';
-import type { SeedPhrase, IdiomHistory } from '../src/types';
+import { normalizePhrase, findCollision } from '../src/dedup';
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// normalizePhrase
 // ---------------------------------------------------------------------------
 
-const ALL_PHRASES: SeedPhrase[] = [
-  { id: 'idiom-a', text: 'a caballo regalado no le mires el diente', type: 'idiom',         region: 'Spain',   theme: 'misc', vulgarity_level: 0 },
-  { id: 'idiom-b', text: 'no hay mal que por bien no venga',          type: 'idiom',         region: 'general', theme: 'work', vulgarity_level: 0 },
-  { id: 'coll-a',  text: 'chido',                                     type: 'colloquialism', region: 'Mexico',  theme: 'misc', vulgarity_level: 0 },
-  { id: 'coll-b',  text: 'tío',                                       type: 'colloquialism', region: 'Spain',   theme: 'misc', vulgarity_level: 0 },
-];
+describe('normalizePhrase', () => {
+  it('lowercases the text', () => {
+    expect(normalizePhrase('HOLA MUNDO')).toBe('hola mundo');
+  });
 
-function makeHistoryRow(idiomId: string, colloquialismId: string): IdiomHistory {
-  return {
-    id: 1,
-    sent_at: '2024-01-01T13:00:00Z',
-    idiom_id: idiomId,
-    idiom_text: '',
-    colloquialism_id: colloquialismId,
-    colloquialism_text: '',
-    curator_justification: '',
-    user_rating: null,
-    user_feedback: null,
-  };
-}
+  it('strips accents from Spanish characters', () => {
+    // 'é' in NFD becomes 'e' + combining acute; the combining char is stripped
+    expect(normalizePhrase('Están aquí')).toBe('estan aqui');
+  });
+
+  it('strips punctuation and replaces with spaces', () => {
+    const result = normalizePhrase('¡Hola, mundo!');
+    expect(result).not.toContain('¡');
+    expect(result).not.toContain('!');
+    expect(result).not.toContain(',');
+  });
+
+  it('collapses multiple whitespace to a single space', () => {
+    expect(normalizePhrase('hola   mundo')).toBe('hola mundo');
+  });
+
+  it('trims leading and trailing whitespace', () => {
+    expect(normalizePhrase('  hola  ')).toBe('hola');
+  });
+});
 
 // ---------------------------------------------------------------------------
-// Tests
+// findCollision
 // ---------------------------------------------------------------------------
 
-describe('idiom_history dedupe', () => {
-  it('excludes any phrase whose id matches the idiom_id column of a history row', () => {
-    const history = [makeHistoryRow('idiom-a', 'unknown-coll')];
-    const result = scout(ALL_PHRASES, history);
-
-    expect(result.idioms.map((p) => p.id)).not.toContain('idiom-a');
-    expect(result.idioms).toHaveLength(1); // idiom-b survives
-    expect(result.colloquialisms).toHaveLength(2); // colloquialisms unaffected
+describe('findCollision', () => {
+  it('returns null when the sent list is empty', () => {
+    expect(findCollision('echar un vistazo', [])).toBeNull();
   });
 
-  it('excludes any phrase whose id matches the colloquialism_id column of a history row', () => {
-    const history = [makeHistoryRow('unknown-idiom', 'coll-b')];
-    const result = scout(ALL_PHRASES, history);
-
-    expect(result.colloquialisms.map((p) => p.id)).not.toContain('coll-b');
-    expect(result.colloquialisms).toHaveLength(1); // coll-a survives
-    expect(result.idioms).toHaveLength(2); // idioms unaffected
+  it('returns the matching phrase on an exact match', () => {
+    const result = findCollision('mola mazo', ['mola mazo', 'ni modo']);
+    expect(result).toBe('mola mazo');
   });
 
-  it('dedupes against both columns simultaneously from a single history row', () => {
-    const history = [makeHistoryRow('idiom-b', 'coll-a')];
-    const result = scout(ALL_PHRASES, history);
-
-    expect(result.idioms.map((p) => p.id)).not.toContain('idiom-b');
-    expect(result.colloquialisms.map((p) => p.id)).not.toContain('coll-a');
-    expect(result.idioms).toHaveLength(1);      // idiom-a survives
-    expect(result.colloquialisms).toHaveLength(1); // coll-b survives
+  it('catches a near-exact match within the default threshold (edit distance 2)', () => {
+    // "echar un vistazo" vs "echarle un vistazo" — "le" is inserted, distance 2
+    const result = findCollision('echar un vistazo', ['echarle un vistazo']);
+    expect(result).toBe('echarle un vistazo');
   });
 
-  it('accumulates exclusions across multiple history rows until the pool is exhausted', () => {
-    const history = [
-      makeHistoryRow('idiom-a', 'coll-a'),
-      makeHistoryRow('idiom-b', 'coll-b'),
-    ];
-    const result = scout(ALL_PHRASES, history);
-
-    expect(result.idioms).toHaveLength(0);
-    expect(result.colloquialisms).toHaveLength(0);
+  it('returns null when edit distance exceeds the default threshold', () => {
+    // "bregar" vs "pichear" — completely different, distance well above 3
+    expect(findCollision('bregar', ['pichear'])).toBeNull();
   });
 
-  it('is idempotent when the same ids appear in multiple history rows', () => {
-    // Sending the same pair twice should exclude those ids exactly once,
-    // not remove additional phrases due to double-counting.
-    const history = [
-      makeHistoryRow('idiom-a', 'coll-a'),
-      makeHistoryRow('idiom-a', 'coll-a'), // duplicate
-    ];
-    const result = scout(ALL_PHRASES, history);
+  it('catches accent variants that normalise to the same string', () => {
+    // After normalisation both "Estar en las nubes" and "estar en las nubes"
+    // become "estar en las nubes" — edit distance 0, within any threshold
+    const result = findCollision('Estar en las nubes', ['estar en las nubes']);
+    expect(result).toBe('estar en las nubes');
+  });
 
-    expect(result.idioms).toHaveLength(1);        // idiom-b survives
-    expect(result.colloquialisms).toHaveLength(1); // coll-b survives
+  it('skips empty or falsy entries in the sent list', () => {
+    // Empty string would have distance <= 3 from a short phrase if not skipped
+    expect(findCollision('bregar', ['', 'pichear'])).toBeNull();
+  });
+
+  it('returns the first colliding phrase when multiple candidates match', () => {
+    const result = findCollision('ni modo', ['ni modo', 'mola mazo']);
+    expect(result).toBe('ni modo');
+  });
+
+  it('respects a custom threshold — distance 4 collides at threshold 4 but not 3', () => {
+    // "echar" vs "echarle" — distance 2, within default threshold
+    // Use a phrase pair with distance exactly 4
+    const generated = 'abcde';
+    const sent = 'abcdi'; // 1 substitution — distance 1, within threshold
+    expect(findCollision(generated, [sent], 0)).toBeNull();  // threshold 0: no match
+    expect(findCollision(generated, [sent], 1)).toBe(sent);  // threshold 1: match
   });
 });

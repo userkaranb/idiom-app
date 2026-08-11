@@ -8,11 +8,12 @@ There is no frontend. The user-facing surface is WhatsApp in v2; in v1 it's the 
 
 **Daily push.** A Cloudflare Cron Trigger fires the Worker's `scheduled()` handler once a day. The Orchestrator runs end-to-end:
 
-1. Reads the user's taste profile and idiom history from D1.
-2. Scout pulls candidate phrases not already in history. Source for v1 is a curated seed list of Spanish idioms and colloquialisms shipped with the repo (e.g. as `seed-phrases.json`). Web-search expansion is out of scope for v1.
-3. Curator picks one idiom + one colloquialism from the candidates and returns a structured JSON verdict via forced tool use. The verdict includes both phrases plus a one-sentence justification per pick referencing the user's profile.
-4. Writer takes the Curator's verdict and produces the user-facing message body — concise, with a meaning and an example usage line for each phrase.
-5. Orchestrator logs the final message body via `console.log` (visible in `wrangler tail`) and appends a row to `idiom_history` recording what was sent.
+1. Load full idiom history and all verbatim user feedback from D1.
+2. Sample ~15 of the 38 seed exemplars as style anchors.
+3. One LLM call (forced tool use, `claude-opus-4-5`): generates one idiom + one colloquialism with `phrase`, `region`, `meaning`, `example`, `nearest_existing`, `why_different` for each.
+4. Deterministic dedup gate: normalize + fuzzy-match generated phrases against all history texts and seed exemplar texts. On collision, regenerate (up to 3 attempts, naming the collision each time). On retry exhaustion, alert and fail.
+5. Assemble Telegram message from returned fields in plain code (region surfaced naturally for non-general phrases).
+6. Persist to `idiom_history` with new fields.
 
 Example daily message body (shape, not exact format — Writer subagent decides):
 
@@ -28,7 +29,7 @@ Today's two:
    Use: "Oye, échate pa'cá un segundo."
 ```
 
-**Inbound feedback.** The same Worker exposes a `fetch()` handler at `POST /webhook`. In v2 Twilio POSTs there when the user replies on WhatsApp; in v1 the endpoint accepts a fake JSON payload of the form `{ from: "+14155551234", body: "loved it, more like this please" }` so the loop can be exercised without Twilio in the path. The Feedback agent parses the freeform reply, the Reflector agent proposes profile updates (e.g. "user prefers more colloquial / less formal"), and those updates are persisted to D1.
+**Inbound feedback.** The same Worker exposes a `fetch()` handler at `POST /webhook`. Telegram POSTs there when the user replies to the bot. The handler verifies the secret token header, stores the raw message text verbatim against the most-recent `idiom_history` row, and sends a plain acknowledgement back. The stored feedback is passed to the generator on the next daily run so it can learn the user's taste over time.
 
 **Memory** — two D1 tables, both long-lived:
 
