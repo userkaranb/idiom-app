@@ -4,6 +4,7 @@ import { createRepositories } from './db';
 import { runDailyFlow } from './orchestrator';
 import { handleTrigger } from './trigger';
 import { handleTelegramWebhook } from './webhook';
+import { sendTelegramAlert } from './telegram';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -46,6 +47,11 @@ export default {
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const repos = createRepositories(env);
-    ctx.waitUntil(runDailyFlow(env, repos));
+    ctx.waitUntil(
+      runDailyFlow(env, repos).catch(async (err: unknown) => {
+        await sendTelegramAlert(env, err);
+        throw err; // re-throw so Cloudflare marks the cron invocation as failed
+      }),
+    );
   },
 };
