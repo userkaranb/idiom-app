@@ -11,25 +11,10 @@ export interface IdiomHistoryRepo {
   /**
    * Returns all history rows, most-recent first.
    *
-   * The Orchestrator passes this result to Scout for lifetime deduplication:
-   * Scout excludes any phrase whose id already appears in history.
+   * The Orchestrator passes this result to the dedup gate (in-memory fuzzy
+   * match) and extracts verbatim user feedback to pass to the generator.
    */
   listAllSentHistory(): Promise<IdiomHistory[]>;
-
-  /**
-   * Returns the `limit` most-recent history rows, for Curator taste-input.
-   *
-   * Ordered most-recent first so callers can slice from the front.
-   */
-  listRecent(limit: number): Promise<IdiomHistory[]>;
-
-  /**
-   * Returns true if `phrase` exactly matches the `idiom_id` or
-   * `colloquialism_id` column of any history row.
-   *
-   * Executes a single SQL query — O(1) regardless of history size.
-   */
-  containsPhrase(phrase: string): Promise<boolean>;
 
   /** Returns the single most-recent history row, or null if history is empty. */
   getMostRecent(): Promise<IdiomHistory | null>;
@@ -39,7 +24,7 @@ export interface IdiomHistoryRepo {
 
   /**
    * Stores the user's freeform reply text against the history row identified
-   * by `rowId`. Called by the webhook after the Feedback agent parses the reply.
+   * by `rowId`. Called by the webhook when the user replies to the bot.
    */
   recordFeedback(rowId: number, freeform: string): Promise<void>;
 }
@@ -52,24 +37,6 @@ export function createIdiomHistoryRepo(db: D1Database): IdiomHistoryRepo {
     return result.results;
   }
 
-  async function listRecent(limit: number): Promise<IdiomHistory[]> {
-    const result = await db
-      .prepare('SELECT * FROM idiom_history ORDER BY id DESC LIMIT ?')
-      .bind(limit)
-      .all<IdiomHistory>();
-    return result.results;
-  }
-
-  async function containsPhrase(phrase: string): Promise<boolean> {
-    const row = await db
-      .prepare(
-        'SELECT 1 FROM idiom_history WHERE idiom_id = ? OR colloquialism_id = ? LIMIT 1',
-      )
-      .bind(phrase, phrase)
-      .first<{ 1: number }>();
-    return row !== null;
-  }
-
   async function getMostRecent(): Promise<IdiomHistory | null> {
     return db
       .prepare('SELECT * FROM idiom_history ORDER BY id DESC LIMIT 1')
@@ -80,15 +47,23 @@ export function createIdiomHistoryRepo(db: D1Database): IdiomHistoryRepo {
     await db
       .prepare(
         `INSERT INTO idiom_history
-           (sent_at, idiom_id, idiom_text, colloquialism_id, colloquialism_text, curator_justification)
+           (sent_at, idiom_id, idiom_text, idiom_meaning, idiom_example, idiom_region,
+            colloquialism_id, colloquialism_text, colloquialism_meaning, colloquialism_example, colloquialism_region,
+            curator_justification)
          VALUES
-           (datetime('now'), ?, ?, ?, ?, ?)`,
+           (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         entry.idiom_id,
         entry.idiom_text,
+        entry.idiom_meaning,
+        entry.idiom_example,
+        entry.idiom_region,
         entry.colloquialism_id,
         entry.colloquialism_text,
+        entry.colloquialism_meaning,
+        entry.colloquialism_example,
+        entry.colloquialism_region,
         entry.curator_justification,
       )
       .run();
@@ -103,8 +78,6 @@ export function createIdiomHistoryRepo(db: D1Database): IdiomHistoryRepo {
 
   return {
     listAllSentHistory,
-    listRecent,
-    containsPhrase,
     getMostRecent,
     recordSent,
     recordFeedback,

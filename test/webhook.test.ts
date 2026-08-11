@@ -1,19 +1,9 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import type { Env, Profile, FeedbackResult, IdiomHistory, ReflectorProposal } from '../src/types';
+import type { Env, IdiomHistory } from '../src/types';
 import type { Repos } from '../src/db';
 
-// vi.hoisted runs before any imports so these mock functions are available
-// inside the vi.mock factory closures below.
-const { mockParseFeedback, mockReflect } = vi.hoisted(() => ({
-  mockParseFeedback: vi.fn(),
-  mockReflect: vi.fn(),
-}));
-
-vi.mock('../src/agents/feedback',  () => ({ parseFeedback: mockParseFeedback }));
-vi.mock('../src/agents/reflector', () => ({ reflect: mockReflect }));
-
-import { handleTelegramWebhook, buildConfirmationMessage } from '../src/webhook';
+import { handleTelegramWebhook } from '../src/webhook';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -35,38 +25,19 @@ function buildEnv(): Env {
   };
 }
 
-const mockProfile: Profile = {
-  id: 1,
-  regional_preference: 'general',
-  vulgarity_tolerance: 1,
-  themes: '["work","misc"]',
-  common_vs_obscure: 3,
-  no_list: '[]',
-  updated_at: '2024-01-01T00:00:00Z',
-};
-
-const mockFeedbackResult: FeedbackResult = {
-  sentiment: 'positive',
-  wants_more_colloquial: true,
-  wants_more_formal: null,
-  wants_more_vulgar: null,
-  wants_less_vulgar: null,
-  theme_mentions: ['food'],
-  raw: 'loved it!',
-};
-
-const mockProposal: ReflectorProposal = {
-  themes: ['work', 'food'],
-  common_vs_obscure: 4,
-};
-
 const mockRecentRow: IdiomHistory = {
   id: 42,
   sent_at: '2024-01-01T13:00:00Z',
   idiom_id: 'some-idiom',
   idiom_text: 'some text',
+  idiom_meaning: null,
+  idiom_example: null,
+  idiom_region: null,
   colloquialism_id: 'some-coll',
   colloquialism_text: 'some coll text',
+  colloquialism_meaning: null,
+  colloquialism_example: null,
+  colloquialism_region: null,
   curator_justification: 'good pick',
   user_rating: null,
   user_feedback: null,
@@ -78,17 +49,11 @@ const mockRecentRow: IdiomHistory = {
 
 function makeFakeRepos(recentRow: IdiomHistory | null = null): Repos {
   return {
-    profile: {
-      getCurrent: vi.fn().mockResolvedValue(mockProfile),
-      applyReflectorChanges: vi.fn().mockResolvedValue(mockProfile),
-    },
     idiomHistory: {
       listAllSentHistory: vi.fn().mockResolvedValue([]),
-      getMostRecent: vi.fn().mockResolvedValue(recentRow),
-      recordSent: vi.fn().mockResolvedValue(undefined),
-      recordFeedback: vi.fn().mockResolvedValue(undefined),
-      listRecent: vi.fn().mockResolvedValue([]),
-      containsPhrase: vi.fn().mockResolvedValue(false),
+      getMostRecent:      vi.fn().mockResolvedValue(recentRow),
+      recordSent:         vi.fn().mockResolvedValue(undefined),
+      recordFeedback:     vi.fn().mockResolvedValue(undefined),
     },
   };
 }
@@ -126,136 +91,6 @@ function postWithSecret(body: unknown, secret = TEST_WEBHOOK_SECRET) {
 }
 
 // ---------------------------------------------------------------------------
-// buildConfirmationMessage — pure function tests
-// ---------------------------------------------------------------------------
-
-describe('buildConfirmationMessage', () => {
-  it('includes the sentiment in the "What I understood" section', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'negative',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: [],
-      raw: 'meh',
-    };
-    const proposal: ReflectorProposal = {};
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('Sentiment: negative');
-  });
-
-  it('includes boolean flags that are true and skips those that are null or false', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'mixed',
-      wants_more_colloquial: true,
-      wants_more_formal: false,
-      wants_more_vulgar: null,
-      wants_less_vulgar: true,
-      theme_mentions: [],
-      raw: 'mixed feelings',
-    };
-    const proposal: ReflectorProposal = {};
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('colloquial');
-    expect(text).toContain('less vulgar');
-    expect(text).not.toContain('formal');
-    expect(text).not.toContain('more vulgar');
-  });
-
-  it('includes theme_mentions when the array is non-empty', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'positive',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: ['food', 'travel'],
-      raw: 'food and travel themes',
-    };
-    const proposal: ReflectorProposal = {};
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('food');
-    expect(text).toContain('travel');
-  });
-
-  it('omits the theme_mentions line when the array is empty', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'neutral',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: [],
-      raw: 'ok',
-    };
-    const proposal: ReflectorProposal = {};
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).not.toContain('Themes mentioned');
-  });
-
-  it('lists proposal fields that are present', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'positive',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: [],
-      raw: 'good',
-    };
-    const proposal: ReflectorProposal = {
-      themes: ['food', 'travel', 'love'],
-      vulgarity_tolerance: 1,
-    };
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('food');
-    expect(text).toContain('Vulgarity tolerance');
-    expect(text).toContain('1');
-  });
-
-  it('shows "No profile changes needed." when proposal has no fields', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'neutral',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: [],
-      raw: 'fine',
-    };
-    const proposal: ReflectorProposal = {};
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('No profile changes needed');
-  });
-
-  it('lists all proposal fields when every optional field is provided', () => {
-    const feedback: FeedbackResult = {
-      sentiment: 'positive',
-      wants_more_colloquial: null,
-      wants_more_formal: null,
-      wants_more_vulgar: null,
-      wants_less_vulgar: null,
-      theme_mentions: [],
-      raw: 'great',
-    };
-    const proposal: ReflectorProposal = {
-      regional_preference: 'Mexico',
-      vulgarity_tolerance: 2,
-      themes: ['food'],
-      common_vs_obscure: 7,
-      no_list_additions: ['bad-phrase'],
-    };
-    const text = buildConfirmationMessage(feedback, proposal);
-    expect(text).toContain('Mexico');
-    expect(text).toContain('2');
-    expect(text).toContain('food');
-    expect(text).toContain('7');
-    expect(text).toContain('bad-phrase');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // POST /webhook — integration tests
 // ---------------------------------------------------------------------------
 
@@ -263,8 +98,6 @@ describe('POST /webhook', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    mockParseFeedback.mockResolvedValue(mockFeedbackResult);
-    mockReflect.mockResolvedValue(mockProposal);
     fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
   });
@@ -332,47 +165,34 @@ describe('POST /webhook', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, skipped: true });
-    expect(mockParseFeedback).not.toHaveBeenCalled();
+    expect(repos.idiomHistory.recordFeedback).not.toHaveBeenCalled();
   });
 
   // -- Happy path: valid signed request, correct chat, with text -----------
 
-  it('returns 200 and calls parseFeedback, reflect, and applyReflectorChanges', async () => {
+  it('returns 200 ok:true for a valid signed text message', async () => {
     const repos = makeFakeRepos();
     const res = await buildApp(repos).request(
       WEBHOOK_URL,
       postWithSecret(buildValidUpdate()),
       buildEnv(),
     );
-
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-
-    expect(mockParseFeedback).toHaveBeenCalledWith(
-      expect.objectContaining({ TELEGRAM_BOT_TOKEN: TEST_BOT_TOKEN }),
-      'loved it!',
-    );
-    expect(mockReflect).toHaveBeenCalledWith(
-      expect.objectContaining({ TELEGRAM_BOT_TOKEN: TEST_BOT_TOKEN }),
-      mockProfile,
-      mockFeedbackResult,
-    );
-    expect(repos.profile.applyReflectorChanges).toHaveBeenCalledWith(mockProposal);
   });
 
-  // -- recordFeedback when a recent history row exists ----------------------
+  // -- recordFeedback stores raw message text --------------------------------
 
-  it('calls recordFeedback with the recent row id and raw feedback text', async () => {
+  it('calls recordFeedback with the recent row id and raw message text', async () => {
     const repos = makeFakeRepos(mockRecentRow);
     await buildApp(repos).request(
       WEBHOOK_URL,
-      postWithSecret(buildValidUpdate()),
+      postWithSecret(buildValidUpdate({ text: 'loved it!' })),
       buildEnv(),
     );
-
     expect(repos.idiomHistory.recordFeedback).toHaveBeenCalledWith(
       mockRecentRow.id,
-      mockFeedbackResult.raw,
+      'loved it!',
     );
   });
 
@@ -385,13 +205,12 @@ describe('POST /webhook', () => {
       postWithSecret(buildValidUpdate()),
       buildEnv(),
     );
-
     expect(repos.idiomHistory.recordFeedback).not.toHaveBeenCalled();
   });
 
   // -- Telegram confirmation reply -----------------------------------------
 
-  it('POSTs a confirmation to the Telegram sendMessage URL with chat_id and text', async () => {
+  it('POSTs a confirmation to the Telegram sendMessage URL with chat_id and text containing "Got it"', async () => {
     const repos = makeFakeRepos();
     await buildApp(repos).request(
       WEBHOOK_URL,
@@ -406,38 +225,10 @@ describe('POST /webhook', () => {
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
     const body = JSON.parse(init.body as string) as { chat_id: string; text: string };
     expect(body.chat_id).toBe(TEST_CHAT_ID);
-    expect(body.text).toContain('Got your feedback');
-    expect(body.text).toContain('Sentiment');
+    expect(body.text).toContain('Got it');
   });
 
-  it('confirmation text includes true boolean flags from the feedback result', async () => {
-    const repos = makeFakeRepos();
-    await buildApp(repos).request(
-      WEBHOOK_URL,
-      postWithSecret(buildValidUpdate()),
-      buildEnv(),
-    );
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const { text } = JSON.parse(init.body as string) as { chat_id: string; text: string };
-    // mockFeedbackResult has wants_more_colloquial: true
-    expect(text).toContain('colloquial');
-  });
-
-  it('confirmation text lists proposal fields that are present', async () => {
-    const repos = makeFakeRepos();
-    await buildApp(repos).request(
-      WEBHOOK_URL,
-      postWithSecret(buildValidUpdate()),
-      buildEnv(),
-    );
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const { text } = JSON.parse(init.body as string) as { chat_id: string; text: string };
-    // mockProposal has themes and common_vs_obscure
-    expect(text).toContain('work');  // themes includes 'work'
-    expect(text).toContain('food');  // themes includes 'food'
-  });
+  // -- 200 even when Telegram confirmation fails ----------------------------
 
   it('returns HTTP 200 ok:true even when the Telegram confirmation fetch fails', async () => {
     fetchMock.mockResolvedValue(new Response('Unauthorized', { status: 401 }));
@@ -447,34 +238,9 @@ describe('POST /webhook', () => {
       postWithSecret(buildValidUpdate()),
       buildEnv(),
     );
-
-    // The feedback was already processed and stored. Telegram delivery failure
-    // must not propagate — Telegram would retry the webhook endlessly if we 500.
+    // Feedback was already stored; Telegram delivery failure must not propagate
+    // or Telegram would retry the webhook indefinitely.
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-  });
-
-  it('applies DB changes before sending the Telegram confirmation', async () => {
-    const callOrder: string[] = [];
-    const repos = makeFakeRepos(mockRecentRow);
-    (repos.profile.applyReflectorChanges as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      callOrder.push('applyReflectorChanges');
-    });
-    (repos.idiomHistory.recordFeedback as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      callOrder.push('recordFeedback');
-    });
-    fetchMock.mockImplementation(async () => {
-      callOrder.push('fetch');
-      return new Response('', { status: 200 });
-    });
-
-    await buildApp(repos).request(
-      WEBHOOK_URL,
-      postWithSecret(buildValidUpdate()),
-      buildEnv(),
-    );
-
-    expect(callOrder.indexOf('applyReflectorChanges')).toBeLessThan(callOrder.indexOf('fetch'));
-    expect(callOrder.indexOf('recordFeedback')).toBeLessThan(callOrder.indexOf('fetch'));
   });
 });

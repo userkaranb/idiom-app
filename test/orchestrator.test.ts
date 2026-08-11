@@ -1,18 +1,22 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { Env, Profile, CuratorVerdict, IdiomHistory, IdiomHistoryInsert } from '../src/types';
+import type { Env, IdiomHistory, IdiomHistoryInsert, WriterOutput } from '../src/types';
 import type { Repos } from '../src/db';
 
 // vi.hoisted runs before any imports so these mock functions are available
 // inside the vi.mock factory closures below.
-const { mockScout, mockCurate, mockWrite } = vi.hoisted(() => ({
-  mockScout:  vi.fn(),
-  mockCurate: vi.fn(),
-  mockWrite:  vi.fn(),
+const { mockGenerate, mockFindCollision } = vi.hoisted(() => ({
+  mockGenerate:      vi.fn(),
+  mockFindCollision: vi.fn(),
 }));
 
-vi.mock('../src/agents/scout',   () => ({ scout:  mockScout  }));
-vi.mock('../src/agents/curator', () => ({ curate: mockCurate }));
-vi.mock('../src/agents/writer',  () => ({ write:  mockWrite  }));
+vi.mock('../src/agents/writer', () => ({ generate: mockGenerate }));
+vi.mock('../src/dedup', () => ({
+  findCollision: mockFindCollision,
+  // normalizePhrase is used by slugify in the orchestrator — provide a working
+  // implementation so slug computation works in tests without the real module.
+  normalizePhrase: (text: string) =>
+    text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim(),
+}));
 
 import { runDailyFlow } from '../src/orchestrator';
 
@@ -20,67 +24,58 @@ import { runDailyFlow } from '../src/orchestrator';
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const mockProfile: Profile = {
-  id: 1,
-  regional_preference: 'general',
-  vulgarity_tolerance: 1,
-  themes: '["work","misc"]',
-  common_vs_obscure: 3,
-  no_list: '[]',
-  updated_at: '2024-01-01T00:00:00Z',
-};
-
-const mockVerdict: CuratorVerdict = {
+const mockWriterOutput: WriterOutput = {
   idiom: {
-    id: 'el-que-no-llora',
-    text: 'El que no llora no mama',
-    justification: 'Common work idiom.',
+    phrase:           'echar la casa por la ventana',
+    region:           'general',
+    meaning:          'to spare no expense',
+    example:          'Para la fiesta echaron la casa por la ventana.',
+    nearest_existing: 'none',
+    why_different:    'Unique meaning about lavish spending.',
   },
   colloquialism: {
-    id: 'chido',
-    text: 'chido',
-    justification: 'Very common in Mexico.',
+    phrase:           'mola mazo',
+    region:           'Spain',
+    meaning:          'it rocks / it is very cool',
+    example:          'Esa pelicula mola mazo.',
+    nearest_existing: 'none',
+    why_different:    'Distinct Spanish slang term.',
   },
 };
 
-const scoutCandidates = {
-  idioms: [
-    { id: 'el-que-no-llora', text: 'El que no llora no mama', type: 'idiom' as const, region: 'general', theme: 'work', vulgarity_level: 0 },
-  ],
-  colloquialisms: [
-    { id: 'chido', text: 'chido', type: 'colloquialism' as const, region: 'Mexico', theme: 'misc', vulgarity_level: 0 },
-  ],
-};
+function makeHistoryRow(overrides: Partial<IdiomHistory> = {}): IdiomHistory {
+  return {
+    id: 1,
+    sent_at: '2024-01-01T13:00:00Z',
+    idiom_id: 'some-idiom',
+    idiom_text: 'some idiom text',
+    idiom_meaning: null,
+    idiom_example: null,
+    idiom_region: null,
+    colloquialism_id: 'some-coll',
+    colloquialism_text: 'some coll text',
+    colloquialism_meaning: null,
+    colloquialism_example: null,
+    colloquialism_region: null,
+    curator_justification: '',
+    user_rating: null,
+    user_feedback: null,
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fake repository factory
-//
-// Returns a Repos whose methods are vi.fn() stubs so tests can assert on
-// which methods were called and with what arguments.
 // ---------------------------------------------------------------------------
 
-function makeFakeRepos({
-  profileRows = [mockProfile] as (Profile | null)[],
-  historyRows  = [] as IdiomHistory[],
-} = {}): Repos {
-  // getCurrent: return the first non-null profile, or throw when absent.
-  const getCurrent = vi.fn(async () => {
-    const profile = profileRows[0] ?? null;
-    if (!profile) throw new Error('profile row with id=1 not found in D1');
-    return profile;
-  });
-
-  const applyReflectorChanges = vi.fn().mockResolvedValue(mockProfile);
-  const listAllSentHistory    = vi.fn().mockResolvedValue(historyRows);
-  const getMostRecent         = vi.fn().mockResolvedValue(null);
-  const recordSent            = vi.fn().mockResolvedValue(undefined);
-  const recordFeedback        = vi.fn().mockResolvedValue(undefined);
-  const listRecent            = vi.fn().mockResolvedValue([]);
-  const containsPhrase        = vi.fn().mockResolvedValue(false);
-
+function makeFakeRepos({ historyRows = [] as IdiomHistory[] } = {}): Repos {
   return {
-    profile:      { getCurrent, applyReflectorChanges },
-    idiomHistory: { listAllSentHistory, getMostRecent, recordSent, recordFeedback, listRecent, containsPhrase },
+    idiomHistory: {
+      listAllSentHistory: vi.fn().mockResolvedValue(historyRows),
+      getMostRecent:      vi.fn().mockResolvedValue(null),
+      recordSent:         vi.fn().mockResolvedValue(undefined),
+      recordFeedback:     vi.fn().mockResolvedValue(undefined),
+    },
   };
 }
 
@@ -104,9 +99,9 @@ describe('runDailyFlow', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    mockScout.mockReturnValue(scoutCandidates);
-    mockCurate.mockResolvedValue(mockVerdict);
-    mockWrite.mockResolvedValue("¡Hola! Today's phrase is...");
+    // Default: generate succeeds, dedup finds no collisions
+    mockGenerate.mockResolvedValue(mockWriterOutput);
+    mockFindCollision.mockReturnValue(null);
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -117,113 +112,185 @@ describe('runDailyFlow', () => {
     vi.restoreAllMocks();
   });
 
-  // --- Acceptance criterion: profile is read before Scout ---
+  // --- History is read before generate ----------------------------------------
 
-  it('reads the current profile before calling Scout', async () => {
-    const repos = makeFakeRepos();
-    await runDailyFlow(makeEnv(), repos);
-
-    expect(repos.profile.getCurrent).toHaveBeenCalledOnce();
-    // Scout must have been called (meaning the profile read was a prerequisite)
-    expect(mockScout).toHaveBeenCalledOnce();
-  });
-
-  // --- Acceptance criterion: history is read before Scout ---
-
-  it('reads idiom history before calling Scout', async () => {
+  it('reads idiom history before calling generate', async () => {
     const repos = makeFakeRepos();
     await runDailyFlow(makeEnv(), repos);
 
     expect(repos.idiomHistory.listAllSentHistory).toHaveBeenCalledOnce();
-    expect(mockScout).toHaveBeenCalledOnce();
+    expect(mockGenerate).toHaveBeenCalledOnce();
   });
 
-  // --- Acceptance criterion: history rows are passed to Scout ---
+  // --- Feedback items extracted and forwarded --------------------------------
 
-  it('passes history rows to Scout', async () => {
+  it('extracts non-null user_feedback strings from history and passes them to generate', async () => {
     const historyRows = [
-      {
-        id: 1, sent_at: '2024-01-01T13:00:00Z',
-        idiom_id: 'seen-idiom', idiom_text: '',
-        colloquialism_id: 'seen-coll', colloquialism_text: '',
-        curator_justification: '', user_rating: null, user_feedback: null,
-      },
-    ] as IdiomHistory[];
+      makeHistoryRow({ user_feedback: 'loved it!' }),
+      makeHistoryRow({ user_feedback: null }),
+      makeHistoryRow({ user_feedback: 'more Puerto Rico please' }),
+    ];
     const repos = makeFakeRepos({ historyRows });
 
     await runDailyFlow(makeEnv(), repos);
 
-    expect(mockScout).toHaveBeenCalledWith(
-      expect.any(Array), // the seed-phrases.json array
-      historyRows,
-    );
+    const [, , , feedbackItems] = mockGenerate.mock.calls[0] as Parameters<typeof mockGenerate>;
+    expect(feedbackItems).toEqual(['loved it!', 'more Puerto Rico please']);
   });
 
-  // --- Acceptance criterion: profile is passed to Curator ---
+  it('passes an empty feedback array when no history row has user_feedback', async () => {
+    const repos = makeFakeRepos({ historyRows: [makeHistoryRow()] });
 
-  it('passes the profile to Curator', async () => {
+    await runDailyFlow(makeEnv(), repos);
+
+    const [, , , feedbackItems] = mockGenerate.mock.calls[0] as Parameters<typeof mockGenerate>;
+    expect(feedbackItems).toEqual([]);
+  });
+
+  // --- Seed exemplars are sampled -------------------------------------------
+
+  it('passes an array of seed exemplars to generate', async () => {
     const repos = makeFakeRepos();
     await runDailyFlow(makeEnv(), repos);
 
-    expect(mockCurate).toHaveBeenCalledWith(
-      expect.objectContaining({ ANTHROPIC_API_KEY: 'test-key' }),
-      scoutCandidates,
-      mockProfile,
-    );
+    const [, exemplars] = mockGenerate.mock.calls[0] as Parameters<typeof mockGenerate>;
+    // EXEMPLAR_SAMPLE_SIZE = 15, seed file has 38 entries → exactly 15 exemplars
+    expect(Array.isArray(exemplars)).toBe(true);
+    expect((exemplars as unknown[]).length).toBe(15);
   });
 
-  // --- Acceptance criterion: verdict is passed to Writer ---
+  // --- Clean output: recordSent and Telegram called once -------------------
 
-  it('passes the CuratorVerdict to Writer', async () => {
+  it('calls recordSent once with the generated fields on a clean run', async () => {
     const repos = makeFakeRepos();
     await runDailyFlow(makeEnv(), repos);
 
-    expect(mockWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ ANTHROPIC_API_KEY: 'test-key' }),
-      mockVerdict,
+    expect(repos.idiomHistory.recordSent).toHaveBeenCalledOnce();
+    expect(repos.idiomHistory.recordSent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idiom_text:              mockWriterOutput.idiom.phrase,
+        idiom_meaning:           mockWriterOutput.idiom.meaning,
+        idiom_region:            mockWriterOutput.idiom.region,
+        colloquialism_text:      mockWriterOutput.colloquialism.phrase,
+        colloquialism_meaning:   mockWriterOutput.colloquialism.meaning,
+        colloquialism_region:    mockWriterOutput.colloquialism.region,
+        curator_justification:   `idiom: ${mockWriterOutput.idiom.why_different} | colloquialism: ${mockWriterOutput.colloquialism.why_different}`,
+      }),
     );
   });
 
-  // --- Acceptance criterion: console.log called exactly once with message body ---
-
-  it('logs the message body exactly once with the [idiom-app] prefix', async () => {
+  it('POSTs to the Telegram sendMessage URL once on a clean run', async () => {
     const repos = makeFakeRepos();
-    const messageBody = "¡Hola! Today's phrase is...";
-    mockWrite.mockResolvedValue(messageBody);
+    await runDailyFlow(makeEnv(), repos);
 
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.telegram.org/botTEST-TOKEN/sendMessage');
+  });
+
+  // --- Log line emitted exactly once ----------------------------------------
+
+  it('emits the [idiom-app] Daily message log line exactly once', async () => {
+    const repos = makeFakeRepos();
     await runDailyFlow(makeEnv(), repos);
 
     const appLogCalls = consoleLogSpy.mock.calls.filter(
       ([msg]) => typeof msg === 'string' && (msg as string).startsWith('[idiom-app]'),
     );
     expect(appLogCalls).toHaveLength(1);
-    expect(appLogCalls[0][0]).toBe('[idiom-app] Daily message:\n' + messageBody);
   });
 
-  // --- Acceptance criterion: Telegram sendMessage POST is made with correct URL, method, headers, body ---
+  // --- Message body includes both phrases -----------------------------------
 
-  it('POSTs the message body to the Telegram sendMessage URL with the expected shape', async () => {
+  it('assembles a message body that includes the idiom phrase', async () => {
     const repos = makeFakeRepos();
-    const messageBody = "¡Hola! Today's phrase is...";
-    mockWrite.mockResolvedValue(messageBody);
-
     await runDailyFlow(makeEnv(), repos);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://api.telegram.org/botTEST-TOKEN/sendMessage');
-    expect(init.method).toBe('POST');
-    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
-    expect(JSON.parse(init.body as string)).toEqual({
-      chat_id: '123456789',
-      text: messageBody,
-    });
+    void url;
+    const body = JSON.parse(init.body as string) as { text: string };
+    expect(body.text).toContain(mockWriterOutput.idiom.phrase);
   });
 
-  // --- Acceptance criterion: throws on non-2xx ---
+  it('assembles a message body that includes the colloquialism phrase', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
 
-  it('throws with a descriptive message when Telegram returns a non-2xx status', async () => {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { text: string };
+    expect(body.text).toContain(mockWriterOutput.colloquialism.phrase);
+  });
+
+  // --- Regional note for non-general region ---------------------------------
+
+  it('includes a natural regional note for a phrase with a non-general region', async () => {
+    // mockWriterOutput.colloquialism.region is 'Spain' → "common in Spain"
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { text: string };
+    expect(body.text).toContain('common in Spain');
+  });
+
+  it('omits a regional note when region is "general"', async () => {
+    // mockWriterOutput.idiom.region is 'general' — no note expected
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { text: string };
+    // The general region label itself should not appear as a note
+    expect(body.text).not.toContain('(general)');
+  });
+
+  // --- Collision triggers a second generate call ---------------------------
+
+  it('calls generate a second time with collisionHint when the first attempt collides', async () => {
+    const collidingPhrase = 'echarle un vistazo';
+    mockFindCollision
+      .mockReturnValueOnce(collidingPhrase) // idiom collision on attempt 0
+      .mockReturnValueOnce(null)            // no coll collision on attempt 0
+      .mockReturnValueOnce(null)            // no idiom collision on attempt 1
+      .mockReturnValueOnce(null);           // no coll collision on attempt 1
+
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
+
+    expect(mockGenerate).toHaveBeenCalledTimes(2);
+    const secondCallArgs = mockGenerate.mock.calls[1] as Parameters<typeof mockGenerate>;
+    // collisionHint is the 5th argument
+    expect(secondCallArgs[4]).toBe(collidingPhrase);
+  });
+
+  it('generates without a collisionHint on the first attempt', async () => {
+    const repos = makeFakeRepos();
+    await runDailyFlow(makeEnv(), repos);
+
+    const firstCallArgs = mockGenerate.mock.calls[0] as Parameters<typeof mockGenerate>;
+    expect(firstCallArgs[4]).toBeUndefined();
+  });
+
+  // --- Retry exhaustion throws ----------------------------------------------
+
+  it('throws with a message containing "dedup retry limit reached" when all retries collide', async () => {
+    mockFindCollision.mockReturnValue('some existing phrase');
+
+    const repos = makeFakeRepos();
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow('dedup retry limit reached');
+  });
+
+  it('does not call recordSent when retry limit is exhausted', async () => {
+    mockFindCollision.mockReturnValue('some existing phrase');
+
+    const repos = makeFakeRepos();
+    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow();
+    expect(repos.idiomHistory.recordSent).not.toHaveBeenCalled();
+  });
+
+  // --- Telegram 429 throws; recordSent NOT called -------------------------
+
+  it('throws when Telegram returns a non-2xx status', async () => {
     fetchMock.mockResolvedValue(new Response('rate limited', { status: 429 }));
     const repos = makeFakeRepos();
 
@@ -232,74 +299,11 @@ describe('runDailyFlow', () => {
     );
   });
 
-  // --- Acceptance criterion: recordSent not called on delivery failure ---
-
-  it('does not record the sent idiom when the Telegram POST fails', async () => {
+  it('does not call recordSent when the Telegram POST fails', async () => {
     fetchMock.mockResolvedValue(new Response('server error', { status: 500 }));
     const repos = makeFakeRepos();
 
     await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow();
     expect(repos.idiomHistory.recordSent).not.toHaveBeenCalled();
-  });
-
-  // --- Acceptance criterion: idiom_history row is recorded after Writer returns ---
-
-  it('records the sent idiom after Writer returns', async () => {
-    const repos = makeFakeRepos();
-    await runDailyFlow(makeEnv(), repos);
-
-    expect(repos.idiomHistory.recordSent).toHaveBeenCalledOnce();
-  });
-
-  it('records the sent idiom with verdict fields and combined justification', async () => {
-    const repos = makeFakeRepos();
-    await runDailyFlow(makeEnv(), repos);
-
-    const expectedEntry: IdiomHistoryInsert = {
-      idiom_id:              mockVerdict.idiom.id,
-      idiom_text:            mockVerdict.idiom.text,
-      colloquialism_id:      mockVerdict.colloquialism.id,
-      colloquialism_text:    mockVerdict.colloquialism.text,
-      curator_justification: `idiom: ${mockVerdict.idiom.justification} | colloquialism: ${mockVerdict.colloquialism.justification}`,
-    };
-    expect(repos.idiomHistory.recordSent).toHaveBeenCalledWith(expectedEntry);
-  });
-
-  // --- Acceptance criterion: throw when profile row is missing ---
-
-  it('throws a descriptive error when the profile row is absent', async () => {
-    const repos = makeFakeRepos({ profileRows: [null] });
-
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
-      'profile row with id=1 not found in D1',
-    );
-  });
-
-  // --- Acceptance criterion: throw when Scout exhausts candidates ---
-
-  it('throws when Scout returns an empty idioms array', async () => {
-    mockScout.mockReturnValue({ idioms: [], colloquialisms: scoutCandidates.colloquialisms });
-    const repos = makeFakeRepos();
-
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
-      'Scout: no remaining idioms/colloquialisms — seed list exhausted',
-    );
-  });
-
-  it('throws when Scout returns an empty colloquialisms array', async () => {
-    mockScout.mockReturnValue({ idioms: scoutCandidates.idioms, colloquialisms: [] });
-    const repos = makeFakeRepos();
-
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow(
-      'Scout: no remaining idioms/colloquialisms — seed list exhausted',
-    );
-  });
-
-  it('does not call Curator when Scout returns empty candidates', async () => {
-    mockScout.mockReturnValue({ idioms: [], colloquialisms: [] });
-    const repos = makeFakeRepos();
-
-    await expect(runDailyFlow(makeEnv(), repos)).rejects.toThrow();
-    expect(mockCurate).not.toHaveBeenCalled();
   });
 });

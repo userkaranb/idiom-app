@@ -1,18 +1,6 @@
 import type { Env } from './types';
 
-const SEED_EXHAUSTION_ALERT_TEXT =
-  '⚠️ No message today — the seed phrase list is exhausted. Add more phrases to seed-phrases.json.';
-
-/**
- * Composes the Telegram alert text from the thrown error.
- *
- * Seed-exhaustion errors get a user-friendly, actionable message; all other
- * errors surface the raw message so the owner can diagnose the crash.
- */
 function buildAlertText(error: unknown): string {
-  if (error instanceof Error && error.message.includes('seed list exhausted')) {
-    return SEED_EXHAUSTION_ALERT_TEXT;
-  }
   const message = error instanceof Error ? error.message : String(error);
   return `⚠️ Daily flow failed: ${message}`;
 }
