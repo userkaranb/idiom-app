@@ -18,6 +18,8 @@ const mockEnv: Env = {
   TELEGRAM_CHAT_ID: '123456789',
   TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
   TRIGGER_SECRET: 'test-trigger-secret',
+  WEB_PASSWORD: 'test-password',
+  COOKIE_SECRET: 'test-cookie-secret',
 };
 
 const mockExemplars: SeedPhrase[] = [

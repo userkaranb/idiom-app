@@ -16,7 +16,7 @@ function slugify(text: string): string {
   return normalizePhrase(text).replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 }
 
-function regionNote(region: string): string {
+export function regionNote(region: string): string {
   const notes: Record<string, string> = {
     'Puerto Rico': "you'll hear this constantly in San Juan",
     'Spain': 'common in Spain',
@@ -27,13 +27,40 @@ function regionNote(region: string): string {
   return notes[region] ?? region;
 }
 
-function formatPhrase(p: PhraseOutput, label: string): string {
+export function formatPhrase(p: PhraseOutput, label: string): string {
   const lines = [`${label}: "${p.phrase}"`];
   if (p.region !== 'general') {
     lines.push(`   (${regionNote(p.region)})`);
   }
   lines.push(`   ${p.meaning}`);
   lines.push(`   ${p.example}`);
+  return lines.join('\n');
+}
+
+/**
+ * Formats a phrase from raw `idiom_history` row fields for display.
+ *
+ * Unlike `formatPhrase`, this variant handles the nullable columns that exist
+ * on rows written before migration 0002 added meaning/example/region. Null
+ * fields are silently omitted — the string "null" is never produced.
+ */
+export function formatPhraseFromRow(
+  text: string,
+  meaning: string | null,
+  example: string | null,
+  region: string | null,
+  label: string,
+): string {
+  const lines = [`${label}: "${text}"`];
+  if (region !== null && region !== 'general') {
+    lines.push(`   (${regionNote(region)})`);
+  }
+  if (meaning !== null) {
+    lines.push(`   ${meaning}`);
+  }
+  if (example !== null) {
+    lines.push(`   ${example}`);
+  }
   return lines.join('\n');
 }
 
