@@ -2,6 +2,22 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Env } from '../types';
 
 /**
+ * Removes markdown emphasis markers from model-generated text before it is
+ * returned to the caller.
+ *
+ * Even with prompt instructions, the model may drift back to markdown in long
+ * conversations. This function strips the most common offenders — bold/italic
+ * asterisks and inline backticks — while leaving the text structure intact.
+ * Newlines are preserved so paragraph separation survives.
+ */
+export function stripMarkdownEmphasis(text: string): string {
+  return text
+    .replace(/\*+/g, '')   // removes * and ** (bold/italic markers)
+    .replace(/`/g, '')      // removes inline code backticks
+    .trim();
+}
+
+/**
  * Sends a multi-turn conversation to Claude Haiku and returns the assistant's
  * reply text.
  *
@@ -32,5 +48,5 @@ export async function chat(
   if (!textBlock) {
     throw new Error('Chat agent: expected text content block in response');
   }
-  return textBlock.text;
+  return stripMarkdownEmphasis(textBlock.text);
 }

@@ -87,6 +87,7 @@ export const FEED_STYLES = `
     .chat-header p { font-size: 0.8rem; color: var(--muted); }
     .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
     .chat-bubble { padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; line-height: 1.5; max-width: 100%; }
+    .chat-bubble-text { display: block; white-space: pre-wrap; word-break: break-word; }
     .chat-bubble.user { background: #e8f0fe; align-self: flex-end; }
     .chat-bubble.assistant { background: #f5f5f5; align-self: flex-start; }
     .chat-bubble .promote-btn { display: block; margin-top: 8px; padding: 4px 10px; font-size: 0.78rem; background: transparent; border: 1px solid #999; border-radius: 4px; cursor: pointer; color: var(--muted); }
