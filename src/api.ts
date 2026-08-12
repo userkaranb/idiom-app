@@ -1,7 +1,7 @@
 import { Context } from 'hono';
 import type { Env, IdiomHistory } from './types';
 import type { Repos } from './db';
-import { runDailyFlow, formatPhraseFromRow } from './orchestrator';
+import { runDailyFlow, formatPhraseFromRow, regionNote } from './orchestrator';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -27,15 +27,35 @@ function buildMessageText(row: IdiomHistory): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns all sent history rows, most-recent first, with an added
- * `message_text` field showing the formatted text delivered to Telegram.
+ * Renders the human-readable regional note for a phrase, or null when there
+ * is nothing worth saying — an unknown region on an old row, or a phrase that
+ * is pan-Hispanic ("general").
+ *
+ * Computed server-side so the wording comes from `regionNote()` in
+ * orchestrator.ts, the same source the Telegram message uses. The browser
+ * previously kept its own copy of this map, which could drift.
+ */
+function regionNoteFor(region: string | null): string | null {
+  if (region === null || region === 'general') return null;
+  return regionNote(region);
+}
+
+/**
+ * Returns all sent history rows, most-recent first, with two derived fields
+ * added per phrase: `message_text` (the exact text delivered to Telegram) and
+ * a `*_region_note` the page can render without duplicating any logic.
  */
 export async function handleGetHistory(
   c: Context<{ Bindings: Env }>,
   repos: Repos,
 ): Promise<Response> {
   const history = await repos.idiomHistory.listAllSentHistory();
-  const rows = history.map(row => ({ ...row, message_text: buildMessageText(row) }));
+  const rows = history.map(row => ({
+    ...row,
+    message_text: buildMessageText(row),
+    idiom_region_note: regionNoteFor(row.idiom_region),
+    colloquialism_region_note: regionNoteFor(row.colloquialism_region),
+  }));
   return c.json(rows);
 }
 

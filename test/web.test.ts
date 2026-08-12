@@ -306,6 +306,33 @@ describe('GET /api/history (authenticated)', () => {
     expect(rows[0].message_text).toContain(nullFieldHistoryRow.idiom_text);
     expect(rows[0].message_text).not.toContain('null');
   });
+
+  it('computes region notes server-side so the page never duplicates the wording', async () => {
+    const repos = makeFakeRepos([sampleHistoryRow]);
+    const res = await buildApp(repos).request(
+      'http://localhost/api/history',
+      { method: 'GET', headers: authHeaders() },
+      buildEnv(),
+    );
+    const rows = await res.json() as Array<Record<string, unknown>>;
+
+    // "general" carries no note — there is nothing regional to say about it.
+    expect(rows[0].idiom_region_note).toBeNull();
+    // A named region resolves to the same phrasing the Telegram message uses.
+    expect(rows[0].colloquialism_region_note).toBe('very common in Mexico');
+  });
+
+  it('returns null region notes for rows predating migration 0002', async () => {
+    const repos = makeFakeRepos([nullFieldHistoryRow]);
+    const res = await buildApp(repos).request(
+      'http://localhost/api/history',
+      { method: 'GET', headers: authHeaders() },
+      buildEnv(),
+    );
+    const rows = await res.json() as Array<Record<string, unknown>>;
+    expect(rows[0].idiom_region_note).toBeNull();
+    expect(rows[0].colloquialism_region_note).toBeNull();
+  });
 });
 
 describe('POST /api/send (authenticated)', () => {

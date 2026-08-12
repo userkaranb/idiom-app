@@ -1,6 +1,7 @@
 import { Context } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from './types';
+import { renderLoginPage } from './ui';
 
 /**
  * The fixed string that is HMAC-signed to produce the session cookie payload.
@@ -145,49 +146,9 @@ export function requireAuth(cookieSecret: string): MiddlewareHandler {
 // Login route handlers
 // ---------------------------------------------------------------------------
 
-function renderLoginHtml(errorMessage?: string): string {
-  const errorBlock = errorMessage
-    ? `<p class="error">${errorMessage}</p>`
-    : '';
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Idiom App — Login</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-    .login-box { background: white; padding: 32px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); min-width: 300px; }
-    h1 { font-size: 1.2rem; margin-bottom: 24px; color: #333; }
-    label { display: block; margin-bottom: 8px; font-size: 0.9rem; color: #555; }
-    input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1rem; margin-bottom: 16px; }
-    input:focus { outline: none; border-color: #666; }
-    button { width: 100%; padding: 10px; background: #333; color: white; border: none; border-radius: 4px; font-size: 1rem; cursor: pointer; }
-    button:hover { background: #555; }
-    .error { color: #c00; font-size: 0.85rem; margin-bottom: 16px; background: #fff0f0; padding: 8px 12px; border-radius: 4px; border: 1px solid #fcc; }
-  </style>
-</head>
-<body>
-  <div class="login-box">
-    <h1>Idiom App</h1>
-    ${errorBlock}
-    <form method="POST" action="/login">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus required>
-      <button type="submit">Log in</button>
-    </form>
-  </div>
-</body>
-</html>`;
-}
-
 /** Renders the login form (no error message). */
 export function handleLoginGet(): Response {
-  return new Response(renderLoginHtml(), {
-    status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  });
+  return renderLoginPage();
 }
 
 /**
@@ -222,8 +183,5 @@ export async function handleLoginPost(c: Context<{ Bindings: Env }>): Promise<Re
     });
   }
 
-  return new Response(renderLoginHtml('Incorrect password'), {
-    status: 401,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  });
+  return renderLoginPage('Incorrect password', 401);
 }
