@@ -12,11 +12,12 @@ const { mockRunDailyFlow } = vi.hoisted(() => ({
 // returns are never used because runDailyFlow is mocked.
 vi.mock('../src/orchestrator', () => ({ runDailyFlow: mockRunDailyFlow }));
 
-// Mock the webhook handler to prevent loading any modules that import
-// @anthropic-ai/sdk — a Node.js module not available in the Workers V8 sandbox.
-// The scheduled() handler under test never calls handleTelegramWebhook; this
-// mock is purely to allow the import of src/index.ts to succeed.
+// Mock modules that import @anthropic-ai/sdk to prevent loading it in the
+// Cloudflare Workers V8 sandbox, which does not export ReadStream from node:fs.
+// The scheduled() handler never calls webhook or chat handlers; these mocks are
+// purely to allow the import of src/index.ts to succeed without the SDK.
 vi.mock('../src/webhook', () => ({ handleTelegramWebhook: vi.fn() }));
+vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }));
 
 import handler from '../src/index';
 

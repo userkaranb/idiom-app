@@ -213,7 +213,10 @@ export const FEED_CLIENT_SCRIPT = `
       var messagesEl = document.getElementById('chat-messages');
       var bubble = document.createElement('div');
       bubble.className = 'chat-bubble ' + role;
-      bubble.textContent = text;
+      var textEl = document.createElement('span');
+      textEl.className = 'chat-bubble-text';
+      textEl.textContent = text;
+      bubble.appendChild(textEl);
       if (promoteBtn) {
         bubble.appendChild(promoteBtn);
       }

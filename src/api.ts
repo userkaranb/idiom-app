@@ -169,7 +169,7 @@ export async function handlePostChat(
     `\n\n` +
     formatPhraseFromRow(row.colloquialism_text, row.colloquialism_meaning, row.colloquialism_example, row.colloquialism_region, 'Colloquialism') +
     `\n\n` +
-    `Answer questions about these phrases: literal meaning, cultural context, regional usage, register (formal vs. casual), related expressions, and how a native speaker would actually use them. Be conversational, encouraging, and specific to these two phrases. Do not help with topics unrelated to Spanish language.`;
+    `Answer questions about these phrases: literal meaning, cultural context, regional usage, register (formal vs. casual), related expressions, and how a native speaker would actually use them. Be conversational, encouraging, and specific to these two phrases. Do not help with topics unrelated to Spanish language.\n\nFormatting rules — follow these exactly:\n- Your reply is displayed as plain text in a narrow 320px panel with no markdown rendering. Do not use **bold**, *italic*, backticks, headings, or bullet-list syntax — they will appear as literal characters.\n- Separate paragraphs with a single blank line.\n- Skip preamble ("Great question!", "Sure!", etc.) — go directly to the answer.\n- No emoji.\n- Aim for 3–5 short paragraphs. A brief offer to go deeper at the end is fine.`;
 
   const typedMessages = messages as Array<{ role: 'user' | 'assistant'; content: string }>;
   const response = await chat(c.env, systemPrompt, typedMessages);
