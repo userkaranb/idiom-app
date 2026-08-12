@@ -23,6 +23,8 @@ function buildEnv(): Env {
     TELEGRAM_CHAT_ID: '123456789',
     TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
     TRIGGER_SECRET: TEST_SECRET,
+    WEB_PASSWORD: 'test-password',
+    COOKIE_SECRET: 'test-cookie-secret',
   };
 }
 

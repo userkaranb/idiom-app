@@ -120,4 +120,12 @@ export interface Env {
   //   Authorization: Bearer <TRIGGER_SECRET>
   // Set with `wrangler secret put TRIGGER_SECRET`.
   TRIGGER_SECRET: string;
+  // Password for the web UI at `/`. Compared directly against the submitted
+  // login form value. Set with `wrangler secret put WEB_PASSWORD`.
+  WEB_PASSWORD: string;
+  // HMAC-SHA256 signing key for the session cookie. Used to sign and verify
+  // the `session` cookie so the password check cannot be bypassed by forging a
+  // cookie. Generate with `openssl rand -hex 32`. Set with
+  // `wrangler secret put COOKIE_SECRET`.
+  COOKIE_SECRET: string;
 }
