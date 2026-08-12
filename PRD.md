@@ -2,7 +2,7 @@
 
 A personal Spanish-immersion app that texts the user one idiom and one colloquialism every day, learns their taste from their replies, and gets better over time. Runs on Cloudflare Workers with D1 as the long-lived state. The product is the daily message + the taste-learning loop, not a Spanish course. Twilio sending is stubbed in v1 so the agent loop can be built and tested without WhatsApp Business API approval; the real send is a follow-up task.
 
-The worker serves a password-gated web UI at `/` (Hono routes, no build step, no external JS or CSS). The page shows the history feed (most-recent first), an ad-hoc send button that calls the same daily flow as the cron, and per-row feedback forms. Delivery is via Telegram (not WhatsApp). The right column of the layout is reserved — a future task will add the LLM chat panel there.
+The worker serves a password-gated web UI at `/` (Hono routes, no build step, no external JS or CSS). The page shows the history feed (most-recent first), an ad-hoc send button that calls the same daily flow as the cron, and per-row feedback forms. Delivery is via Telegram (not WhatsApp). Clicking any history card opens a per-phrase chat panel in the right column. The panel is scoped to that row's two phrases and lets the user ask follow-up questions (literal meaning, cultural context, regional usage, etc.). Conversations are ephemeral — they live in browser memory and are lost on refresh or when a different row is clicked. Any message the user typed can be explicitly promoted into that row's stored feedback via a "Save as feedback" button; promotion appends to existing feedback rather than replacing it. No model-generated text ever reaches `user_feedback`.
 
 ## What it does
 

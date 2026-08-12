@@ -56,6 +56,8 @@ function makeFakeRepos(recentRow: IdiomHistory | null = null): Repos {
       getMostRecent:      vi.fn().mockResolvedValue(recentRow),
       recordSent:         vi.fn().mockResolvedValue(undefined),
       recordFeedback:     vi.fn().mockResolvedValue(undefined),
+      getById:            vi.fn().mockResolvedValue(null),
+      appendFeedback:     vi.fn().mockResolvedValue(''),
     },
   };
 }

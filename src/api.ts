@@ -2,6 +2,7 @@ import { Context } from 'hono';
 import type { Env, IdiomHistory } from './types';
 import type { Repos } from './db';
 import { runDailyFlow, formatPhraseFromRow, regionNote } from './orchestrator';
+import { chat } from './agents/chat';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -114,4 +115,103 @@ export async function handlePostFeedback(
   // Verbatim storage — no mutation of `text` before this call.
   await repos.idiomHistory.recordFeedback(rowId, text);
   return c.json({ ok: true });
+}
+
+/**
+ * Runs one turn of the per-phrase chat session.
+ *
+ * The system prompt is built here from the row's stored phrase data so the
+ * LLM is scoped to exactly those two phrases. Conversations are stateless on
+ * the server — the browser owns the message history and sends the full thread
+ * each turn.
+ *
+ * INVARIANT: no model-generated text ever reaches `user_feedback`. This handler
+ * only calls `chat()`; writing to the DB is `handlePostPromote`'s job.
+ */
+export async function handlePostChat(
+  c: Context<{ Bindings: Env }>,
+  repos: Repos,
+): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid request body' }, 400);
+  }
+
+  if (typeof body !== 'object' || body === null) {
+    return c.json({ error: 'Invalid request body' }, 400);
+  }
+
+  const { rowId, messages } = body as Record<string, unknown>;
+
+  if (typeof rowId !== 'number' || !Number.isInteger(rowId) || rowId <= 0) {
+    return c.json({ error: 'rowId must be a positive integer' }, 400);
+  }
+
+  if (!Array.isArray(messages)) {
+    return c.json({ error: 'messages must be an array' }, 400);
+  }
+
+  if (messages.length > 20) {
+    return c.json({ error: 'Conversation too long' }, 400);
+  }
+
+  const row = await repos.idiomHistory.getById(rowId);
+  if (row === null) {
+    return c.json({ error: 'Row not found' }, 404);
+  }
+
+  const systemPrompt =
+    `You are a warm, knowledgeable Spanish language tutor helping a native English speaker understand two specific phrases they received today.\n\n` +
+    `The two phrases:\n\n` +
+    formatPhraseFromRow(row.idiom_text, row.idiom_meaning, row.idiom_example, row.idiom_region, 'Idiom') +
+    `\n\n` +
+    formatPhraseFromRow(row.colloquialism_text, row.colloquialism_meaning, row.colloquialism_example, row.colloquialism_region, 'Colloquialism') +
+    `\n\n` +
+    `Answer questions about these phrases: literal meaning, cultural context, regional usage, register (formal vs. casual), related expressions, and how a native speaker would actually use them. Be conversational, encouraging, and specific to these two phrases. Do not help with topics unrelated to Spanish language.`;
+
+  const typedMessages = messages as Array<{ role: 'user' | 'assistant'; content: string }>;
+  const response = await chat(c.env, systemPrompt, typedMessages);
+  return c.json({ response });
+}
+
+/**
+ * Promotes a user-authored message into the row's stored `user_feedback`.
+ *
+ * INVARIANT: `body.text` is stored verbatim — no trimming, summarization, or
+ * reformatting. Any mutation here would break the feedback loop that passes
+ * raw text to the generator on the next daily run.
+ *
+ * INVARIANT: only user-authored text reaches `user_feedback`. Model-generated
+ * replies come through `handlePostChat`; this handler never calls `chat()`.
+ */
+export async function handlePostPromote(
+  c: Context<{ Bindings: Env }>,
+  repos: Repos,
+): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid request body' }, 400);
+  }
+
+  if (typeof body !== 'object' || body === null) {
+    return c.json({ error: 'Invalid request body' }, 400);
+  }
+
+  const { rowId, text } = body as Record<string, unknown>;
+
+  if (typeof rowId !== 'number' || !Number.isInteger(rowId) || rowId <= 0) {
+    return c.json({ error: 'rowId must be a positive integer' }, 400);
+  }
+
+  if (typeof text !== 'string' || text.length === 0) {
+    return c.json({ error: 'text must be a non-empty string' }, 400);
+  }
+
+  // Verbatim append — no mutation of `text` before this call.
+  const feedback = await repos.idiomHistory.appendFeedback(rowId, text);
+  return c.json({ ok: true, feedback });
 }

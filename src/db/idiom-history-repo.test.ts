@@ -222,3 +222,89 @@ describe('IdiomHistoryRepo.recordFeedback', () => {
     expect(bindMock).toHaveBeenCalledWith('loved it', 42);
   });
 });
+
+// ---------------------------------------------------------------------------
+// getById
+// ---------------------------------------------------------------------------
+
+describe('IdiomHistoryRepo.getById', () => {
+  it('queries idiom_history WHERE id = ? and binds the id', async () => {
+    const { db, prepareMock, bindMock } = buildD1Mock({ firstRow: BASE_ROW });
+    const repo = createIdiomHistoryRepo(db);
+
+    await repo.getById(7);
+
+    const sql = prepareMock.mock.calls[0][0] as string;
+    expect(sql).toContain('FROM idiom_history');
+    expect(sql).toContain('WHERE id = ?');
+    expect(bindMock).toHaveBeenCalledWith(7);
+  });
+
+  it('returns the row when found', async () => {
+    const { db } = buildD1Mock({ firstRow: BASE_ROW });
+    const repo = createIdiomHistoryRepo(db);
+
+    const result = await repo.getById(7);
+
+    expect(result).toEqual(BASE_ROW);
+  });
+
+  it('returns null when not found', async () => {
+    const { db } = buildD1Mock({ firstRow: null });
+    const repo = createIdiomHistoryRepo(db);
+
+    const result = await repo.getById(999);
+
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendFeedback — null existing
+// ---------------------------------------------------------------------------
+
+describe('IdiomHistoryRepo.appendFeedback — null existing', () => {
+  it('updates user_feedback with just the new text when existing feedback is null', async () => {
+    const { db, prepareMock, bindMock } = buildD1Mock({
+      firstRow: { user_feedback: null } as unknown as IdiomHistory,
+    });
+    const repo = createIdiomHistoryRepo(db);
+
+    const result = await repo.appendFeedback(7, 'new note');
+
+    // SELECT comes first, UPDATE second
+    const selectSql = prepareMock.mock.calls[0][0] as string;
+    const updateSql = prepareMock.mock.calls[1][0] as string;
+    expect(selectSql).toContain('SELECT');
+    expect(selectSql).toContain('user_feedback');
+    expect(selectSql).toContain('WHERE id = ?');
+    expect(updateSql).toContain('UPDATE idiom_history');
+    expect(updateSql).toContain('user_feedback = ?');
+
+    // UPDATE is bound with just the new text (no merge separator)
+    expect(bindMock).toHaveBeenLastCalledWith('new note', 7);
+    expect(result).toBe('new note');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendFeedback — non-null existing
+// ---------------------------------------------------------------------------
+
+describe('IdiomHistoryRepo.appendFeedback — non-null existing', () => {
+  it('merges existing feedback with new text using separator and returns the merged string', async () => {
+    const { db, prepareMock, bindMock } = buildD1Mock({
+      firstRow: { user_feedback: 'old note' } as unknown as IdiomHistory,
+    });
+    const repo = createIdiomHistoryRepo(db);
+
+    const result = await repo.appendFeedback(7, 'new note');
+
+    const updateSql = prepareMock.mock.calls[1][0] as string;
+    expect(updateSql).toContain('UPDATE idiom_history');
+
+    // UPDATE is bound with the merged string
+    expect(bindMock).toHaveBeenLastCalledWith('old note\n---\nnew note', 7);
+    expect(result).toBe('old note\n---\nnew note');
+  });
+});
