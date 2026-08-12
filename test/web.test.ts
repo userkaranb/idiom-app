@@ -8,14 +8,16 @@ import { signCookie } from '../src/auth';
 // Hoist mock factories before any module imports so vi.mock picks them up.
 // ---------------------------------------------------------------------------
 
-const { mockRunDailyFlow } = vi.hoisted(() => ({
+const { mockRunDailyFlow, mockChat } = vi.hoisted(() => ({
   mockRunDailyFlow: vi.fn(),
+  mockChat: vi.fn(),
 }));
 
 // Mock the Writer agent first so that importOriginal on orchestrator below
 // does not transitively load @anthropic-ai/sdk (which has node:fs deps that
 // are unavailable in the Workers V8 sandbox).
 vi.mock('../src/agents/writer', () => ({ generate: vi.fn() }));
+vi.mock('../src/agents/chat', () => ({ chat: mockChat }));
 
 // Partially mock orchestrator: preserve real exports (formatPhraseFromRow,
 // regionNote, formatPhrase) and replace only runDailyFlow.
@@ -25,7 +27,7 @@ vi.mock('../src/orchestrator', async (importOriginal) => {
 });
 
 import { requireAuth, handleLoginGet, handleLoginPost } from '../src/auth';
-import { handleGetHistory, handlePostSend, handlePostFeedback } from '../src/api';
+import { handleGetHistory, handlePostSend, handlePostFeedback, handlePostChat, handlePostPromote } from '../src/api';
 import { renderPage } from '../src/ui';
 import { formatPhraseFromRow } from '../src/orchestrator';
 
@@ -74,6 +76,8 @@ function makeFakeRepos(history: IdiomHistory[] = []): Repos {
       getMostRecent:      vi.fn().mockResolvedValue(null),
       recordSent:         vi.fn().mockResolvedValue(undefined),
       recordFeedback:     vi.fn().mockResolvedValue(undefined),
+      getById:            vi.fn().mockResolvedValue(null),
+      appendFeedback:     vi.fn().mockResolvedValue('merged feedback'),
     },
   };
 }
@@ -94,6 +98,8 @@ function buildApp(repos: Repos) {
   app.get('/api/history', (c) => handleGetHistory(c, repos));
   app.post('/api/send', (c) => handlePostSend(c, repos));
   app.post('/api/feedback', (c) => handlePostFeedback(c, repos));
+  app.post('/api/chat',    (c) => handlePostChat(c, repos));
+  app.post('/api/promote', (c) => handlePostPromote(c, repos));
 
   return app;
 }
@@ -434,5 +440,125 @@ describe('POST /api/feedback (authenticated)', () => {
       buildEnv(),
     );
     expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/chat — unauthenticated
+// ---------------------------------------------------------------------------
+
+describe('POST /api/chat (unauthenticated)', () => {
+  it('returns 401 without a session cookie', async () => {
+    const res = await buildApp(makeFakeRepos()).request(
+      'http://localhost/api/chat',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId: 1, messages: [{ role: 'user', content: 'hello' }] }),
+      },
+      buildEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/chat — authenticated
+// ---------------------------------------------------------------------------
+
+describe('POST /api/chat (authenticated)', () => {
+  beforeEach(() => {
+    mockChat.mockReset();
+  });
+
+  it('returns 200 with the chat response when row exists', async () => {
+    const repos = makeFakeRepos();
+    repos.idiomHistory.getById = vi.fn().mockResolvedValue(sampleHistoryRow);
+    mockChat.mockResolvedValue('¡Claro que sí!');
+
+    const sentMessages = [{ role: 'user' as const, content: '¿Qué significa?' }];
+    const res = await buildApp(repos).request(
+      'http://localhost/api/chat',
+      {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId: 1, messages: sentMessages }),
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ response: '¡Claro que sí!' });
+    expect(mockChat).toHaveBeenCalled();
+    // Third argument to chat() is the messages array
+    expect(mockChat.mock.calls[0][2]).toEqual(sentMessages);
+  });
+
+  it('returns 400 when messages array length exceeds 20', async () => {
+    const repos = makeFakeRepos();
+    repos.idiomHistory.getById = vi.fn().mockResolvedValue(sampleHistoryRow);
+
+    const tooManyMessages = Array.from({ length: 21 }, (_, i) => ({
+      role: 'user' as const,
+      content: `message ${i}`,
+    }));
+    const res = await buildApp(repos).request(
+      'http://localhost/api/chat',
+      {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId: 1, messages: tooManyMessages }),
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain('too long');
+  });
+
+  it('returns 404 when the row does not exist', async () => {
+    // getById already returns null by default in makeFakeRepos
+    const res = await buildApp(makeFakeRepos()).request(
+      'http://localhost/api/chat',
+      {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId: 999, messages: [{ role: 'user', content: 'hello' }] }),
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/promote — authenticated
+// ---------------------------------------------------------------------------
+
+describe('POST /api/promote (authenticated)', () => {
+  it('appends user message verbatim and returns merged feedback', async () => {
+    const repos = makeFakeRepos();
+    // Override appendFeedback to return the expected merged string
+    repos.idiomHistory.appendFeedback = vi.fn().mockResolvedValue('old note\n---\nnew note');
+
+    const verbatimText = 'new note';
+    const res = await buildApp(repos).request(
+      'http://localhost/api/promote',
+      {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rowId: 1, text: verbatimText }),
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, feedback: 'old note\n---\nnew note' });
+    // Verify the text was passed verbatim — no trimming or mutation
+    expect(repos.idiomHistory.appendFeedback).toHaveBeenCalledWith(1, verbatimText);
   });
 });

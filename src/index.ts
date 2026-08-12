@@ -6,7 +6,7 @@ import { handleTrigger } from './trigger';
 import { handleTelegramWebhook } from './webhook';
 import { sendTelegramAlert } from './telegram';
 import { requireAuth, handleLoginGet, handleLoginPost } from './auth';
-import { handleGetHistory, handlePostSend, handlePostFeedback } from './api';
+import { handleGetHistory, handlePostSend, handlePostFeedback, handlePostChat, handlePostPromote } from './api';
 import { renderPage } from './ui';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -42,8 +42,10 @@ app.use('/api/*', async (c, next) => requireAuth(c.env.COOKIE_SECRET)(c, next));
 // Protected pages and API routes.
 app.get('/', () => renderPage());
 app.get('/api/history', (c) => handleGetHistory(c, createRepositories(c.env)));
-app.post('/api/send', (c) => handlePostSend(c, createRepositories(c.env)));
+app.post('/api/send',    (c) => handlePostSend(c, createRepositories(c.env)));
 app.post('/api/feedback', (c) => handlePostFeedback(c, createRepositories(c.env)));
+app.post('/api/chat',    (c) => handlePostChat(c, createRepositories(c.env)));
+app.post('/api/promote', (c) => handlePostPromote(c, createRepositories(c.env)));
 
 export default {
   /**
@@ -56,7 +58,9 @@ export default {
    *   GET  /              — history feed (session-gated)
    *   GET  /api/history   — history JSON (session-gated)
    *   POST /api/send      — ad-hoc daily flow (session-gated)
-   *   POST /api/feedback  — store per-row feedback (session-gated)
+   *   POST /api/feedback  — store per-row feedback, full overwrite (session-gated)
+   *   POST /api/chat      — one turn of per-phrase chat; returns LLM reply (session-gated)
+   *   POST /api/promote   — append a user message to user_feedback (session-gated)
    *   POST /trigger       — Bearer-gated ad-hoc invocation of the daily flow.
    *   POST /webhook       — Telegram update webhook (secret-token gated).
    */
