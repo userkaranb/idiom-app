@@ -58,6 +58,8 @@ export async function generate(
     `You are a Spanish-language educator for a native English speaker who wants to learn authentic, living Spanish — not textbook phrases.\n\n` +
     `Your job: generate ONE fresh Spanish idiom and ONE fresh colloquialism that the user has never seen before. ` +
     `Generate phrases you would actually hear from native speakers. Prefer concrete, vivid, usable phrases over abstract ones.\n\n` +
+    `Keep every phrase clean and workplace-appropriate: no profanity, no sexual content, no vulgar slang, and nothing whose literal reading is crude. ` +
+    `Authentic does not mean coarse — if the most natural phrase for an idea is vulgar, choose the next-best clean one.\n\n` +
     `Style exemplars (these show you what good looks like — do NOT generate any of these exact phrases, but match their register and authenticity):\n` +
     seedExemplars.map(s => `- "${s.text}" (${s.type}, ${s.region})`).join('\n') +
     `\n\nAlready sent — you must not generate any of these or close variants:\n` +

@@ -110,6 +110,15 @@ describe('generate', () => {
     expect(callArgs.system).toContain('Ni modo');
   });
 
+  it('instructs the model to keep phrases clean', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.system).toContain('workplace-appropriate');
+    expect(callArgs.system).toContain('no profanity');
+  });
+
   it('includes collisionHint in the system prompt when provided', async () => {
     mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
     await generate(mockEnv, mockExemplars, mockHistory, [], 'echarle un vistazo');
