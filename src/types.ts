@@ -29,7 +29,7 @@ export interface IdiomHistory {
 /**
  * Shape of one phrase entry in `seed-phrases.json`.
  *
- * The seed file ships 38 hand-curated exemplars. Their role is to show the
+ * The seed file ships 36 hand-curated exemplars. Their role is to show the
  * generator what good looks like — they are never sent directly to the user.
  * Deduplication is text-based (see `src/dedup.ts`), so the `id` field is used
  * only for human reference in the JSON file, not for DB dedup.
@@ -40,7 +40,6 @@ export interface SeedPhrase {
   type: "idiom" | "colloquialism";
   region: string;                          // "general", "Mexico", "Spain", etc.
   theme: string;                           // "love", "work", "animals", "food", "misc"
-  vulgarity_level: number;                 // 0–3
 }
 
 /**

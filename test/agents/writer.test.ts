@@ -23,8 +23,8 @@ const mockEnv: Env = {
 };
 
 const mockExemplars: SeedPhrase[] = [
-  { id: 'idiom-a', text: 'Meter la pata', type: 'idiom', region: 'general', theme: 'misc', vulgarity_level: 0 },
-  { id: 'coll-a', text: 'Ni modo', type: 'colloquialism', region: 'Mexico', theme: 'misc', vulgarity_level: 0 },
+  { id: 'idiom-a', text: 'Meter la pata', type: 'idiom', region: 'general', theme: 'misc' },
+  { id: 'coll-a', text: 'Ni modo', type: 'colloquialism', region: 'Mexico', theme: 'misc' },
 ];
 
 const mockHistory: IdiomHistory[] = [];
