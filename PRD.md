@@ -33,7 +33,7 @@ Today's two:
 
 **Memory** — two D1 tables, both long-lived:
 
-- `profile` — single-row table holding the user's current taste model: regional preference, vulgarity tolerance, themes (love / work / animals / food), common-vs-obscure preference, and a hard "no" list of phrases that bombed. Updated by the Reflector.
+- `profile` — single-row table holding the user's current taste model: regional preference, themes (love / work / animals / food), common-vs-obscure preference, and a hard "no" list of phrases that bombed. Updated by the Reflector.
 - `idiom_history` — one row per sent message: `sent_at`, the idiom + colloquialism that were sent, the Curator's justification, the user's rating if any, and the freeform feedback if any. Scout dedupes against this; Curator uses it as taste input.
 
 D1 persists across worker invocations, code redeploys, and Cloudflare maintenance. The whole point of the flywheel — feedback → profile → better picks — only works because the profile lives forever.

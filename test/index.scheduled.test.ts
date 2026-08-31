@@ -18,6 +18,17 @@ vi.mock('../src/orchestrator', () => ({ runDailyFlow: mockRunDailyFlow }));
 // mock is purely to allow the import of src/index.ts to succeed.
 vi.mock('../src/webhook', () => ({ handleTelegramWebhook: vi.fn() }));
 
+// Mock the agent modules for the same reason. These are the only two modules
+// that import @anthropic-ai/sdk directly, and the SDK's Node entrypoint does
+// `import { ReadStream } from 'node:fs'` — a named export the Workers sandbox
+// cannot resolve, which fails the whole suite at import time.
+//
+// Mocking the SDK's importers (rather than each of their consumers) keeps this
+// list correct as the app grows: src/index.ts reaches agents/chat through
+// src/api.ts, which did not exist when only the webhook mock was needed.
+vi.mock('../src/agents/chat', () => ({ chat: vi.fn() }));
+vi.mock('../src/agents/writer', () => ({ generate: vi.fn() }));
+
 import handler from '../src/index';
 
 // ---------------------------------------------------------------------------

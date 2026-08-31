@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS profile (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   regional_preference TEXT    NOT NULL DEFAULT 'general',
-  vulgarity_tolerance INTEGER NOT NULL DEFAULT 1,
   themes              TEXT    NOT NULL DEFAULT '["love","work","animals","food"]',
   common_vs_obscure   INTEGER NOT NULL DEFAULT 3,
   no_list             TEXT    NOT NULL DEFAULT '[]',

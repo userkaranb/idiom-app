@@ -17,7 +17,7 @@ wrangler.toml cron: "0 13 * * *"
   scheduled() handler
          |
          +- 1. Read D1
-         |      +-- profile          (taste model: region, vulgarity, themes, ...)
+         |      +-- profile          (taste model: region, themes, ...)
          |      +-- idiom_history    (every phrase ever sent, used for dedup)
          |
          +- 2. Scout  (LLM call)
@@ -88,7 +88,6 @@ the Curator and Scout read it every morning.
 |----------------------|---------|--------------------------------------------------|
 | id                   | INTEGER | always 1                                         |
 | regional_preference  | TEXT    | "general" / "Mexico" / "Spain" / "Caribbean" ... |
-| vulgarity_tolerance  | INTEGER | 0 = none, 1 = mild, 2 = moderate, 3 = high      |
 | themes               | TEXT    | JSON array: ["love","work","animals","food"]     |
 | common_vs_obscure    | INTEGER | 0 = very common ... 10 = very obscure            |
 | no_list              | TEXT    | JSON array of phrase ids that bombed             |

@@ -23,8 +23,8 @@ const mockEnv: Env = {
 };
 
 const mockExemplars: SeedPhrase[] = [
-  { id: 'idiom-a', text: 'Meter la pata', type: 'idiom', region: 'general', theme: 'misc', vulgarity_level: 0 },
-  { id: 'coll-a', text: 'Ni modo', type: 'colloquialism', region: 'Mexico', theme: 'misc', vulgarity_level: 0 },
+  { id: 'idiom-a', text: 'Meter la pata', type: 'idiom', region: 'general', theme: 'misc' },
+  { id: 'coll-a', text: 'Ni modo', type: 'colloquialism', region: 'Mexico', theme: 'misc' },
 ];
 
 const mockHistory: IdiomHistory[] = [];
@@ -108,6 +108,15 @@ describe('generate', () => {
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.system).toContain('Meter la pata');
     expect(callArgs.system).toContain('Ni modo');
+  });
+
+  it('instructs the model to keep phrases clean', async () => {
+    mockCreate.mockResolvedValue(buildToolResponse(mockToolOutput));
+    await generate(mockEnv, mockExemplars, mockHistory, []);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.system).toContain('workplace-appropriate');
+    expect(callArgs.system).toContain('no profanity');
   });
 
   it('includes collisionHint in the system prompt when provided', async () => {
